@@ -14,6 +14,7 @@ export default function UploadPage() {
   const [showThankYou, setShowThankYou] = useState(false);
   const [finalToken, setFinalToken] = useState('');
   const [paymentMode, setPaymentMode] = useState('');
+  const [showPaymentHelp, setShowPaymentHelp] = useState(false);
 
   const [printRange, setPrintRange] = useState('all');
   const [customPages, setCustomPages] = useState('');
@@ -92,6 +93,7 @@ export default function UploadPage() {
     setShowThankYou(false);
     setFinalToken('');
     setPaymentMode('');
+    setShowPaymentHelp(false);
   };
 
   const handleFileChange = (e) => {
@@ -116,6 +118,7 @@ export default function UploadPage() {
     setFile(selectedFile);
     setJobId(null);
     setMessage('');
+    setShowPaymentHelp(false);
     setTotalPages(0);
     setPrice(0);
     setPrintRange('all');
@@ -132,6 +135,7 @@ export default function UploadPage() {
     formData.append('file', file);
 
     setMessage('Uploading...');
+    setShowPaymentHelp(false);
     setLoading(true);
 
     try {
@@ -160,11 +164,13 @@ export default function UploadPage() {
 
     const loaded = await loadRazorpayScript();
     if (!loaded) {
+      setShowPaymentHelp(true);
       setMessage('Razorpay load failed. Internet check કરો.');
       return;
     }
 
     setPayLoading(true);
+    setShowPaymentHelp(false);
 
     try {
       setMessage('Opening payment...');
@@ -202,11 +208,15 @@ export default function UploadPage() {
 
             setFinalToken(verifyRes.data.token || jobId);
             setPaymentMode('Online Paid');
+            setShowPaymentHelp(false);
             setShowThankYou(true);
             setMessage('');
           } catch (err) {
             console.log(err);
+            setShowPaymentHelp(true);
             setMessage('Payment done but verify failed. Counter પર બતાવો.');
+          } finally {
+            setPayLoading(false);
           }
         },
 
@@ -225,13 +235,15 @@ export default function UploadPage() {
       const rzp = new window.Razorpay(options);
 
       rzp.on('payment.failed', function () {
-        setMessage('Payment failed. You can Pay Cash at Counter.');
+        setShowPaymentHelp(true);
+        setMessage('Payment could not be completed. Please try again.');
         setPayLoading(false);
       });
 
       rzp.open();
     } catch (error) {
       console.log(error);
+      setShowPaymentHelp(true);
       setMessage(error.response?.data?.error || 'Payment order create failed ❌');
       setPayLoading(false);
     }
@@ -249,6 +261,7 @@ export default function UploadPage() {
     }
 
     setPayLoading(true);
+    setShowPaymentHelp(false);
 
     try {
       setMessage('Creating cash order...');
@@ -527,6 +540,38 @@ export default function UploadPage() {
           >
             Pay Cash at Counter
           </button>
+
+          {showPaymentHelp && (
+            <div
+              style={{
+                marginTop: '15px',
+                padding: '15px',
+                background: '#fff8e1',
+                border: '1px solid #ff9800',
+                borderRadius: '8px',
+                textAlign: 'left'
+              }}
+            >
+              <h4
+                style={{
+                  margin: '0 0 10px',
+                  color: '#d35400'
+                }}
+              >
+                Having trouble opening your UPI app?
+              </h4>
+
+              <p
+                style={{
+                  margin: 0,
+                  lineHeight: '1.7',
+                  fontSize: '14px'
+                }}
+              >
+                Tap <b>Show All Options</b> → <b>Apps &amp; UPI ID</b>, then select your preferred UPI app to complete the payment.
+              </p>
+            </div>
+          )}
 
           <p style={{ fontSize: '12px', color: '#666', marginTop: '10px', textAlign: 'center' }}>
             Online payment failed? Cash option use કરો.
