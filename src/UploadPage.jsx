@@ -3,6 +3,7 @@ import axios from 'axios';
 
 export default function UploadPage() {
   const [file, setFile] = useState(null);
+  const [filePreviewUrl, setFilePreviewUrl] = useState('');
   const [totalPages, setTotalPages] = useState(0);
   const [copies, setCopies] = useState(1);
   const [duplex, setDuplex] = useState('single');
@@ -15,35 +16,34 @@ export default function UploadPage() {
   const [finalToken, setFinalToken] = useState('');
   const [paymentMode, setPaymentMode] = useState('');
   const [showPaymentHelp, setShowPaymentHelp] = useState(false);
-
   const [printRange, setPrintRange] = useState('all');
   const [customPages, setCustomPages] = useState('');
+  const [redirectCount, setRedirectCount] = useState(10);
 
   const API_BASE_URL =
     import.meta.env.VITE_API_URL ||
     import.meta.env.VITE_API_BASE_URL ||
-    'http://localhost:5000';
+    'http://localhost:10000';
 
   const printType =
-    duplex === 'single' ? 'single' :
-    duplex === 'long' ? 'duplex_long' :
-    'duplex_short';
+    duplex === 'single' ? 'single' : duplex === 'long' ? 'duplex_long' : 'duplex_short';
+
+  const safeCopies = Math.min(Math.max(Number(copies || 1), 1), 99);
+  const isPdf = file?.name?.toLowerCase().endsWith('.pdf');
 
   const getBillablePages = () => {
     if (printRange === 'all' || !customPages) return totalPages;
 
     let pages = [];
-
     customPages.split(',').forEach((part) => {
-      part = part.trim();
-
-      if (part.includes('-')) {
-        const [start, end] = part.split('-').map(Number);
+      const clean = part.trim();
+      if (clean.includes('-')) {
+        const [start, end] = clean.split('-').map(Number);
         if (start && end && start <= end) {
           for (let i = start; i <= end; i++) pages.push(i);
         }
-      } else if (part) {
-        const pageNum = Number(part);
+      } else {
+        const pageNum = Number(clean);
         if (pageNum) pages.push(pageNum);
       }
     });
@@ -55,23 +55,56 @@ export default function UploadPage() {
 
   const calculateLocalPrice = (pages, side, copyCount) => {
     if (pages <= 0) return 0;
-
-    let rate = pages <= 5 ? 5 : side === 'single' ? 3 : 3.5;
-    let billableUnits = side === 'single' ? pages : Math.ceil(pages / 2);
-
-    return Math.round(billableUnits * rate * Number(copyCount || 1));
+    const isDuplexPrint = side === 'long' || side === 'short';
+    const rate = pages <= 5 ? 5 : isDuplexPrint ? 3.5 : 3;
+    const units = isDuplexPrint ? Math.ceil(pages / 2) : pages;
+    return Math.round(units * rate * Number(copyCount || 1));
   };
 
   useEffect(() => {
     if (totalPages > 0) {
-      setPrice(calculateLocalPrice(billablePages, duplex, copies));
+      setPrice(calculateLocalPrice(billablePages, duplex, safeCopies));
     }
-  }, [copies, duplex, totalPages, printRange, customPages]);
+  }, [copies, duplex, totalPages, printRange, customPages, billablePages, safeCopies]);
+
+  useEffect(() => {
+    return () => {
+      if (filePreviewUrl) URL.revokeObjectURL(filePreviewUrl);
+    };
+  }, [filePreviewUrl]);
+
+  useEffect(() => {
+    if (!showThankYou) return;
+    const timer = setInterval(() => {
+      setRedirectCount((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          resetOrder();
+          return 10;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [showThankYou]);
+
+  const totalSheets =
+    duplex === 'single'
+      ? billablePages * safeCopies
+      : Math.ceil(billablePages / 2) * safeCopies;
+
+  const getPriceBreakdown = () => {
+    if (totalPages <= 0) return '';
+    const isDuplexPrint = duplex === 'long' || duplex === 'short';
+    const rate = billablePages <= 5 ? 5 : isDuplexPrint ? 3.5 : 3;
+    const units = isDuplexPrint ? Math.ceil(billablePages / 2) : billablePages;
+    const unitName = isDuplexPrint ? 'Sheets' : 'Pages';
+    return `${units} ${unitName} × Rs. ${rate} × ${safeCopies} Copy`;
+  };
 
   const loadRazorpayScript = () => {
     return new Promise((resolve) => {
       if (window.Razorpay) return resolve(true);
-
       const script = document.createElement('script');
       script.src = 'https://checkout.razorpay.com/v1/checkout.js';
       script.onload = () => resolve(true);
@@ -82,18 +115,35 @@ export default function UploadPage() {
 
   const resetOrder = () => {
     setFile(null);
+    setFilePreviewUrl('');
     setTotalPages(0);
     setCopies(1);
     setDuplex('single');
     setPrice(0);
     setMessage('');
     setJobId(null);
+    setLoading(false);
+    setPayLoading(false);
     setPrintRange('all');
     setCustomPages('');
     setShowThankYou(false);
     setFinalToken('');
     setPaymentMode('');
     setShowPaymentHelp(false);
+    setRedirectCount(10);
+  };
+
+  const updateCopies = (value) => {
+    if (value === '') {
+      setCopies('');
+      return;
+    }
+    const num = parseInt(value, 10);
+    if (Number.isNaN(num)) {
+      setCopies(1);
+      return;
+    }
+    setCopies(Math.min(Math.max(num, 1), 99));
   };
 
   const handleFileChange = (e) => {
@@ -110,12 +160,21 @@ export default function UploadPage() {
       name.endsWith('.png');
 
     if (!isValid) {
-      setMessage('ફક્ત PDF અથવા Photo જ અપલોડ કરો ❌');
+      setMessage('Only PDF, JPG, JPEG, PNG files allowed ❌');
       e.target.value = '';
       return;
     }
 
+    if (selectedFile.size > 50 * 1024 * 1024) {
+      setMessage('Max file size 50MB allowed ❌');
+      e.target.value = '';
+      return;
+    }
+
+    if (filePreviewUrl) URL.revokeObjectURL(filePreviewUrl);
+
     setFile(selectedFile);
+    setFilePreviewUrl(URL.createObjectURL(selectedFile));
     setJobId(null);
     setMessage('');
     setShowPaymentHelp(false);
@@ -134,7 +193,7 @@ export default function UploadPage() {
     const formData = new FormData();
     formData.append('file', file);
 
-    setMessage('Uploading...');
+    setMessage('Uploading your file...');
     setShowPaymentHelp(false);
     setLoading(true);
 
@@ -158,14 +217,14 @@ export default function UploadPage() {
     }
 
     if (billablePages <= 0) {
-      setMessage('Valid pages select કરો ❌');
+      setMessage('Please select valid pages ❌');
       return;
     }
 
     const loaded = await loadRazorpayScript();
     if (!loaded) {
       setShowPaymentHelp(true);
-      setMessage('Razorpay load failed. Internet check કરો.');
+      setMessage('Payment system load failed. Please check your internet.');
       return;
     }
 
@@ -173,15 +232,15 @@ export default function UploadPage() {
     setShowPaymentHelp(false);
 
     try {
-      setMessage('Opening payment...');
+      setMessage('Opening secure payment...');
 
       const orderRes = await axios.post(
         `${API_BASE_URL}/api/jobs/${jobId}/pay/checkout-order`,
         {
-          copies: Number(copies || 1),
+          copies: safeCopies,
           printType,
           printRange,
-          customPages
+          customPages,
         }
       );
 
@@ -192,18 +251,23 @@ export default function UploadPage() {
         amount: data.amount,
         currency: data.currency || 'INR',
         name: data.shopName || 'Falguni Xerox',
-        description: `${billablePages} Pages × ${copies} Copy`,
+        description: `${billablePages} Pages × ${safeCopies} Copy`,
         order_id: data.orderId,
-
+        method: {
+          upi: true,
+          card: false,
+          netbanking: false,
+          wallet: false,
+          paylater: false,
+        },
         handler: async function (response) {
           try {
             setMessage('Payment verifying...');
-
             const verifyRes = await axios.post(`${API_BASE_URL}/api/payment/verify`, {
               jobId,
               razorpay_order_id: response.razorpay_order_id,
               razorpay_payment_id: response.razorpay_payment_id,
-              razorpay_signature: response.razorpay_signature
+              razorpay_signature: response.razorpay_signature,
             });
 
             setFinalToken(verifyRes.data.token || jobId);
@@ -214,29 +278,28 @@ export default function UploadPage() {
           } catch (err) {
             console.log(err);
             setShowPaymentHelp(true);
-            setMessage('Payment done but verify failed. Counter પર બતાવો.');
+            setMessage('Payment done but verification failed. Please show this at counter.');
           } finally {
             setPayLoading(false);
           }
         },
-
         modal: {
           ondismiss: function () {
-            setMessage('Payment cancelled. Cash option use કરી શકો છો.');
+            setMessage('Payment cancelled. Try again or use Cash option.');
+            setShowPaymentHelp(true);
             setPayLoading(false);
-          }
+          },
         },
-
         theme: {
-          color: '#0a8f08'
-        }
+          color: '#6d28d9',
+        },
       };
 
       const rzp = new window.Razorpay(options);
 
       rzp.on('payment.failed', function () {
         setShowPaymentHelp(true);
-        setMessage('Payment could not be completed. Please try again.');
+        setMessage('Payment failed. Select Show All Options → Apps & UPI ID.');
         setPayLoading(false);
       });
 
@@ -256,7 +319,7 @@ export default function UploadPage() {
     }
 
     if (billablePages <= 0) {
-      setMessage('Valid pages select કરો ❌');
+      setMessage('Please select valid pages ❌');
       return;
     }
 
@@ -265,12 +328,11 @@ export default function UploadPage() {
 
     try {
       setMessage('Creating cash order...');
-
       const res = await axios.post(`${API_BASE_URL}/api/jobs/${jobId}/cash`, {
-        copies: Number(copies || 1),
+        copies: safeCopies,
         printType,
         printRange,
-        customPages
+        customPages,
       });
 
       setFinalToken(res.data.token || jobId);
@@ -285,299 +347,760 @@ export default function UploadPage() {
     }
   };
 
-  const totalSheets =
-    duplex === 'single'
-      ? billablePages * Number(copies || 1)
-      : Math.ceil(billablePages / 2) * Number(copies || 1);
-
-  const getPriceBreakdown = () => {
-    if (totalPages <= 0) return '';
-
-    const rate = billablePages <= 5 ? 5 : duplex === 'single' ? 3 : 3.5;
-    const billableUnits =
-      duplex === 'single' ? billablePages : Math.ceil(billablePages / 2);
-    const unitName = duplex === 'single' ? 'Pages' : 'Sheets';
-
-    return `${billableUnits} ${unitName} × ₹${rate} × ${copies} Copy`;
-  };
-
   if (showThankYou) {
     return (
-      <div className="container" style={{ padding: '20px', maxWidth: '500px', margin: '0 auto', textAlign: 'center' }}>
-        <div style={{ padding: '40px 20px', border: '2px solid #0a8f08', borderRadius: '12px', background: '#f0fff0' }}>
-          <h1 style={{ fontSize: '48px', margin: '0' }}>✅</h1>
-          <h2 style={{ color: '#0a8f08', margin: '20px 0' }}>
-            Thank you for using Falguni Xerox!
-          </h2>
-
-          <p style={{ fontSize: '18px', margin: '10px 0' }}>Your Token Number:</p>
-          <h1 style={{ fontSize: '42px', margin: '10px 0', color: '#ff9800' }}>
-            #{finalToken}
-          </h1>
-
-          <p style={{ fontSize: '16px', color: '#333' }}>
-            Payment: <b>{paymentMode}</b>
-          </p>
-
-          {paymentMode === 'Cash Pending' ? (
-            <p style={{ fontSize: '15px', color: '#666' }}>
-              કાઉન્ટર પર Cash આપો. Admin confirm કર્યા પછી print થશે.
+      <div style={styles.page}>
+        <div style={styles.app}>
+          <div style={styles.successCard}>
+            <div style={styles.successIcon}>✅</div>
+            <h2 style={styles.successTitle}>Order Received</h2>
+            <p>Your Token Number</p>
+            <div style={styles.tokenBox}>#{finalToken}</div>
+            <div style={styles.successStatus}>
+              <span>Payment</span>
+              <b>{paymentMode}</b>
+            </div>
+            <p style={styles.successNote}>
+              {paymentMode === 'Cash Pending'
+                ? 'Please pay cash at the counter. Your print will start after admin confirmation.'
+                : 'Printing started. Please collect your print from the counter.'}
             </p>
-          ) : (
-            <p style={{ fontSize: '15px', color: '#666' }}>
-              Printing Started... કાઉન્ટર પરથી તમારી પ્રિન્ટ લઈ લો.
-            </p>
-          )}
-
-          <button
-            onClick={resetOrder}
-            style={{
-              marginTop: '30px',
-              background: '#0a8f08',
-              color: 'white',
-              padding: '12px 30px',
-              fontSize: '16px',
-              border: 'none',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              fontWeight: 'bold'
-            }}
-          >
-            New Order
-          </button>
+            <p style={styles.redirectText}>New order screen will open in {redirectCount} seconds.</p>
+            <button onClick={resetOrder} style={styles.successButton}>
+              New Order
+            </button>
+          </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="container" style={{ padding: '20px', maxWidth: '500px', margin: '0 auto' }}>
-      <h1>🖨️ Falguni Xerox</h1>
+    <div style={styles.page}>
+      <div style={styles.app}>
+        <header style={styles.header}>
+          <div>
+            <h1 style={styles.brandTitle}>Falguni Xerox</h1>
+            <p style={styles.brandSub}>Upload • Select • Pay • Print</p>
+          </div>
+          <div style={styles.printerIcon}>🖨️</div>
+        </header>
 
-      <div className="step" style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '8px' }}>
-        <h2>1. Upload File</h2>
+        <div style={styles.steps}>
+          <span style={jobId ? styles.stepDone : styles.stepActive}>1 Upload</span>
+          <span style={totalPages > 0 ? styles.stepActive : styles.step}>2 Setting</span>
+          <span style={price > 0 ? styles.stepActive : styles.step}>3 Pay</span>
+        </div>
 
-        <input
-          type="file"
-          onChange={handleFileChange}
-          accept=".pdf,.jpg,.jpeg,.png"
-          disabled={loading}
-        />
+        {totalPages <= 0 && (
+          <>
+            <section style={styles.uploadMainCard}>
+              <div style={styles.bigFileIcon}>📄</div>
+              <h2 style={styles.uploadTitle}>Upload File</h2>
+              <p style={styles.uploadSub}>PDF, JPG, JPEG, PNG</p>
+              <p style={styles.uploadSub}>Max 50MB</p>
 
-        <button
-          onClick={handleUpload}
-          disabled={loading || !file}
-          style={{ marginLeft: '10px', padding: '8px 16px' }}
-        >
-          {loading ? 'Uploading...' : 'Upload'}
-        </button>
-      </div>
+              <label style={styles.dropBox}>
+                <input
+                  type="file"
+                  onChange={handleFileChange}
+                  accept=".pdf,.jpg,.jpeg,.png"
+                  disabled={loading}
+                  style={{ display: 'none' }}
+                />
+                <div style={styles.folderIcon}>📁</div>
+                <b>{file ? file.name : 'Select File'}</b>
+                <span>{file ? 'File selected successfully' : 'or tap here to browse'}</span>
+              </label>
 
-      {message && (
-        <p
-          style={{
-            padding: '10px',
-            background: message.includes('✅') ? '#d4edda' : '#f8d7da',
-            borderRadius: '5px',
-            color: message.includes('✅') ? '#155724' : '#721c24',
-            whiteSpace: 'pre-line'
-          }}
-        >
-          {message}
-        </p>
-      )}
+              <button
+                onClick={handleUpload}
+                disabled={loading || !file}
+                style={{
+                  ...styles.uploadPayButton,
+                  opacity: loading || !file ? 0.65 : 1,
+                  cursor: loading || !file ? 'not-allowed' : 'pointer',
+                }}
+              >
+                {loading ? 'Uploading...' : 'Upload & Pay કરો'} <span>›</span>
+              </button>
+            </section>
 
-      {totalPages > 0 && (
-        <div className="step" style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '8px' }}>
-          <h2>2. Print Settings</h2>
+            {message && <div style={styles.messageBox}>{message}</div>}
+            <FeatureBox compact />
+          </>
+        )}
 
-          <p><strong>Total Pages: {totalPages}</strong></p>
-          <p><strong>Billable Pages: {billablePages}</strong></p>
-          <p><strong>Total Sheets: {totalSheets}</strong></p>
+        {totalPages > 0 && (
+          <>
+            <section style={styles.panel}>
+              <div style={styles.sectionTitle}>
+                <span style={styles.sectionIcon}>📄</span>
+                <h2 style={styles.panelTitle}>Print Type</h2>
+              </div>
 
-          <div style={{ margin: '15px 0', padding: '10px', background: '#f9f9f9', borderRadius: '5px' }}>
-            <p><b>Select Pages to Print:</b></p>
+              <button
+                onClick={() => setDuplex('single')}
+                style={duplex === 'single' ? styles.printSelected : styles.printButton}
+              >
+                <span>{duplex === 'single' ? '◉' : '○'}</span> Single Side
+              </button>
 
-            <label style={{ display: 'block', margin: '8px 0', cursor: 'pointer' }}>
-              <input
-                type="radio"
-                checked={printRange === 'all'}
-                onChange={() => setPrintRange('all')}
-                style={{ marginRight: '8px' }}
-              />
-              All Pages ({totalPages})
-            </label>
+              <button
+                onClick={() => setDuplex('long')}
+                style={duplex === 'long' ? styles.printSelected : styles.printButton}
+              >
+                <span>{duplex === 'long' ? '◉' : '○'}</span> Double Side - Long Edge
+              </button>
 
-            <label style={{ display: 'block', margin: '8px 0', cursor: 'pointer' }}>
-              <input
-                type="radio"
-                checked={printRange === 'custom'}
-                onChange={() => setPrintRange('custom')}
-                style={{ marginRight: '8px' }}
-              />
-              Custom Pages:
-            </label>
+              <button
+                onClick={() => setDuplex('short')}
+                style={duplex === 'short' ? styles.printSelected : styles.printButton}
+              >
+                <span>{duplex === 'short' ? '◉' : '○'}</span> Double Side - Short Edge
+              </button>
+            </section>
 
-            <input
-              type="text"
-              placeholder="e.g. 2,4,7-10"
-              value={customPages}
-              disabled={printRange === 'all'}
-              onChange={(e) => setCustomPages(e.target.value)}
-              style={{ marginLeft: '25px', width: '200px', padding: '5px' }}
-            />
+            <section style={styles.panel}>
+              <div style={styles.sectionTitle}>
+                <span style={styles.sectionIcon}>🧾</span>
+                <h2 style={styles.panelTitle}>Copies</h2>
+              </div>
 
-            {printRange === 'custom' && customPages && (
-              <p style={{ fontSize: '12px', color: billablePages > 0 ? '#666' : 'red', marginLeft: '25px' }}>
-                Selected: {billablePages} pages
-              </p>
+              <div style={styles.copyBox}>
+                <button
+                  type="button"
+                  onClick={() => updateCopies(safeCopies - 1)}
+                  disabled={safeCopies <= 1}
+                  style={styles.copyButton}
+                >
+                  −
+                </button>
+
+                <input
+                  type="number"
+                  value={copies}
+                  min="1"
+                  max="99"
+                  inputMode="numeric"
+                  onChange={(e) => updateCopies(e.target.value)}
+                  onBlur={() => {
+                    if (!copies || Number(copies) < 1) setCopies(1);
+                    if (Number(copies) > 99) setCopies(99);
+                  }}
+                  style={styles.copyInput}
+                />
+
+                <button
+                  type="button"
+                  onClick={() => updateCopies(safeCopies + 1)}
+                  disabled={safeCopies >= 99}
+                  style={styles.copyButton}
+                >
+                  +
+                </button>
+              </div>
+            </section>
+
+            {isPdf && (
+              <section style={styles.panel}>
+                <div style={styles.sectionTitle}>
+                  <span style={styles.sectionIcon}>📑</span>
+                  <h2 style={styles.panelTitle}>Pages</h2>
+                </div>
+
+                <div style={styles.pageButtons}>
+                  <button
+                    onClick={() => setPrintRange('all')}
+                    style={printRange === 'all' ? styles.pageSelected : styles.pageButton}
+                  >
+                    All Pages
+                  </button>
+                  <button
+                    onClick={() => setPrintRange('custom')}
+                    style={printRange === 'custom' ? styles.pageSelected : styles.pageButton}
+                  >
+                    Custom
+                  </button>
+                </div>
+
+                {printRange === 'custom' && (
+                  <input
+                    type="text"
+                    placeholder="e.g. 2,4,7-10"
+                    value={customPages}
+                    onChange={(e) => setCustomPages(e.target.value)}
+                    style={styles.customInput}
+                  />
+                )}
+              </section>
             )}
-          </div>
 
-          <div style={{ margin: '15px 0' }}>
-            <label>
-              <b>Copies: </b>
-              <input
-                type="number"
-                value={copies}
-                min="1"
-                max="99"
-                onChange={(e) => {
-                  const num = parseInt(e.target.value);
-                  setCopies(!isNaN(num) && num >= 1 ? num : 1);
-                }}
-                style={{ marginLeft: '10px', width: '60px', padding: '5px' }}
-              />
-            </label>
-          </div>
+            <section style={styles.amountCard}>
+              <h2 style={styles.amountTitle}>Total Amount</h2>
+              <b style={styles.amountValue}>Rs. {price}</b>
+              <p style={styles.amountBreak}>{getPriceBreakdown()}</p>
+              <small style={styles.amountSmall}>
+                {billablePages} pages • {totalSheets} sheets
+              </small>
+            </section>
 
-          <div style={{ margin: '15px 0' }}>
-            <p><b>Select Print Type:</b></p>
+            <section style={styles.panel}>
+              <div style={styles.sectionTitle}>
+                <span style={styles.sectionIcon}>📱</span>
+                <h2 style={styles.panelTitle}>Payment</h2>
+              </div>
 
-            <label style={{ display: 'block', margin: '8px 0', cursor: 'pointer' }}>
-              <input
-                type="radio"
-                name="duplex"
-                value="single"
-                checked={duplex === 'single'}
-                onChange={(e) => setDuplex(e.target.value)}
-                style={{ marginRight: '8px' }}
-              />
-              Single Side Print
-            </label>
+              <button onClick={handlePay} disabled={payLoading} style={styles.onlinePay}>
+                <span>🔒</span>
+                {payLoading ? 'Please wait...' : `Pay Online Rs. ${price}`}
+                <b>›</b>
+              </button>
 
-            <label style={{ display: 'block', margin: '8px 0', cursor: 'pointer' }}>
-              <input
-                type="radio"
-                name="duplex"
-                value="long"
-                checked={duplex === 'long'}
-                onChange={(e) => setDuplex(e.target.value)}
-                style={{ marginRight: '8px' }}
-              />
-              Double Side - Long Edge
-            </label>
+              <button onClick={handleCashPayment} disabled={payLoading} style={styles.cashPay}>
+                <span>💵</span>
+                Pay Cash at Counter
+              </button>
 
-            <label style={{ display: 'block', margin: '8px 0', cursor: 'pointer' }}>
-              <input
-                type="radio"
-                name="duplex"
-                value="short"
-                checked={duplex === 'short'}
-                onChange={(e) => setDuplex(e.target.value)}
-                style={{ marginRight: '8px' }}
-              />
-              Double Side - Short Edge
-            </label>
-          </div>
+              {showPaymentHelp && (
+                <div style={styles.helpBox}>
+                  <b>If payment app does not open:</b>
+                  <p>Select Show All Options → Apps &amp; UPI ID → Choose your UPI app.</p>
+                </div>
+              )}
+            </section>
 
-          <div style={{ background: '#f0f0f0', padding: '15px', borderRadius: '8px', marginTop: '15px' }}>
-            <h3 style={{ margin: '0 0 5px 0' }}>Total Price: ₹{price}</h3>
-            <p style={{ margin: '0', fontSize: '14px', color: '#666' }}>
-              {getPriceBreakdown()}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {price > 0 && jobId && (
-        <div className="step" style={{ marginBottom: '20px', padding: '15px', border: '1px solid #ddd', borderRadius: '8px' }}>
-          <h2>3. Payment</h2>
-
-          <button
-            onClick={handlePay}
-            disabled={payLoading}
-            style={{
-              width: '100%',
-              background: '#0a8f08',
-              color: 'white',
-              padding: '15px 20px',
-              fontSize: '18px',
-              border: 'none',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              fontWeight: 'bold'
-            }}
-          >
-            {payLoading ? 'Please wait...' : `Pay Online ₹${price}`}
-          </button>
-
-          <button
-            onClick={handleCashPayment}
-            disabled={payLoading}
-            style={{
-              width: '100%',
-              background: '#ff9800',
-              color: 'white',
-              padding: '15px 20px',
-              fontSize: '18px',
-              border: 'none',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              fontWeight: 'bold',
-              marginTop: '10px'
-            }}
-          >
-            Pay Cash at Counter
-          </button>
-
-          {showPaymentHelp && (
-            <div
-              style={{
-                marginTop: '15px',
-                padding: '15px',
-                background: '#fff8e1',
-                border: '1px solid #ff9800',
-                borderRadius: '8px',
-                textAlign: 'left'
-              }}
-            >
-              <h4
-                style={{
-                  margin: '0 0 10px',
-                  color: '#d35400'
-                }}
-              >
-                Having trouble opening your UPI app?
-              </h4>
-
-              <p
-                style={{
-                  margin: 0,
-                  lineHeight: '1.7',
-                  fontSize: '14px'
-                }}
-              >
-                Tap <b>Show All Options</b> → <b>Apps &amp; UPI ID</b>, then select your preferred UPI app to complete the payment.
-              </p>
-            </div>
-          )}
-
-          <p style={{ fontSize: '12px', color: '#666', marginTop: '10px', textAlign: 'center' }}>
-            Online payment failed? Cash option use કરો.
-          </p>
-        </div>
-      )}
+            {message && <div style={styles.messageBox}>{message}</div>}
+            <FeatureBox />
+          </>
+        )}
+      </div>
     </div>
   );
+}
+
+function FeatureBox({ compact = false }) {
+  return (
+    <div style={compact ? styles.featureBoxCompact : styles.featureBox}>
+      <div>
+        <span>⚡</span>
+        <b>Fast</b>
+        <p>Printing</p>
+      </div>
+      <div>
+        <span>🛡️</span>
+        <b>Secure</b>
+        <p>Payment</p>
+      </div>
+      <div>
+        <span>💎</span>
+        <b>Best</b>
+        <p>Quality</p>
+      </div>
+    </div>
+  );
+}
+
+const styles = {
+  page: {
+    minHeight: '100dvh',
+    background: 'linear-gradient(160deg, #1238e8 0%, #4c1dff 45%, #1700a8 100%)',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+    fontFamily: '"Inter","Segoe UI",Roboto,Arial,sans-serif',
+    color: '#ffffff',
+  },
+
+  app: {
+    width: '100%',
+    maxWidth: '430px',
+    minHeight: '100dvh',
+    padding: '22px 20px 14px',
+    boxSizing: 'border-box',
+    background:
+      'radial-gradient(circle at top right, rgba(236,72,153,0.28), transparent 30%), linear-gradient(160deg, #1238e8 0%, #4c1dff 45%, #1700a8 100%)',
+    color: '#ffffff',
+  },
+
+  header: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: '12px',
+    marginBottom: '18px',
+  },
+
+  brandTitle: {
+    margin: 0,
+    fontSize: '34px',
+    lineHeight: '40px',
+    fontWeight: '900',
+    color: '#ffffff',
+    textShadow: '0 3px 12px rgba(0,0,0,0.25)',
+  },
+
+  brandSub: {
+    margin: '8px 0 0',
+    fontSize: '16px',
+    color: '#ffffff',
+    opacity: 0.96,
+    fontWeight: '700',
+  },
+
+  printerIcon: {
+    width: '54px',
+    height: '54px',
+    borderRadius: '50%',
+    display: 'grid',
+    placeItems: 'center',
+    background: 'rgba(255,255,255,0.18)',
+    fontSize: '26px',
+    flexShrink: 0,
+  },
+
+  steps: {
+    display: 'flex',
+    justifyContent: 'center',
+    gap: '9px',
+    marginBottom: '22px',
+  },
+
+  step: {
+    padding: '12px 17px',
+    borderRadius: '999px',
+    background: 'rgba(255,255,255,0.16)',
+    color: '#ffffff',
+    fontWeight: '800',
+    fontSize: '14px',
+  },
+
+  stepActive: {
+    padding: '12px 17px',
+    borderRadius: '999px',
+    background: '#ffffff',
+    color: '#10105f',
+    fontWeight: '900',
+    fontSize: '14px',
+  },
+
+  stepDone: {
+    padding: '12px 17px',
+    borderRadius: '999px',
+    background: 'rgba(255,255,255,0.26)',
+    color: '#ffffff',
+    fontWeight: '900',
+    fontSize: '14px',
+  },
+
+  uploadMainCard: {
+    borderRadius: '24px',
+    padding: '28px 24px',
+    border: '1px solid rgba(255,255,255,0.18)',
+    background: 'rgba(255,255,255,0.08)',
+    textAlign: 'center',
+    color: '#ffffff',
+  },
+
+  bigFileIcon: {
+    width: '78px',
+    height: '78px',
+    margin: '0 auto 20px',
+    borderRadius: '22px',
+    display: 'grid',
+    placeItems: 'center',
+    background: 'rgba(255,255,255,0.18)',
+    fontSize: '38px',
+  },
+
+  uploadTitle: {
+    margin: 0,
+    fontSize: '30px',
+    fontWeight: '900',
+    color: '#ffffff',
+  },
+
+  uploadSub: {
+    margin: '8px 0 0',
+    fontSize: '18px',
+    color: '#ffffff',
+  },
+
+  dropBox: {
+    marginTop: '26px',
+    minHeight: '162px',
+    borderRadius: '22px',
+    border: '2px dashed rgba(255,255,255,0.75)',
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: '10px',
+    cursor: 'pointer',
+    padding: '18px',
+    boxSizing: 'border-box',
+    wordBreak: 'break-word',
+    color: '#ffffff',
+  },
+
+  folderIcon: {
+    fontSize: '42px',
+  },
+
+  uploadPayButton: {
+    width: '100%',
+    marginTop: '26px',
+    padding: '17px 20px',
+    borderRadius: '18px',
+    border: '1px solid rgba(255,255,255,0.28)',
+    background: 'linear-gradient(90deg, #8b2cff, #ec26c9)',
+    color: '#ffffff',
+    fontSize: '20px',
+    fontWeight: '900',
+    boxShadow: '0 16px 34px rgba(0,0,0,0.22)',
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: '14px',
+  },
+
+  panel: {
+    borderRadius: '22px',
+    padding: '18px',
+    marginBottom: '14px',
+    border: '1px solid rgba(255,255,255,0.18)',
+    background: 'rgba(255,255,255,0.10)',
+    color: '#ffffff',
+  },
+
+  sectionTitle: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    marginBottom: '16px',
+    color: '#ffffff',
+  },
+
+  sectionIcon: {
+    width: '34px',
+    height: '34px',
+    borderRadius: '10px',
+    background: 'rgba(255,255,255,0.16)',
+    display: 'grid',
+    placeItems: 'center',
+    color: '#ffffff',
+  },
+
+  panelTitle: {
+    margin: 0,
+    color: '#ffffff',
+    fontSize: '22px',
+    fontWeight: '900',
+    textShadow: '0 2px 8px rgba(0,0,0,0.22)',
+  },
+
+  printButton: {
+    width: '100%',
+    padding: '16px',
+    marginTop: '8px',
+    borderRadius: '13px',
+    border: 'none',
+    background: '#ffffff',
+    color: '#090b3f',
+    fontSize: '16px',
+    textAlign: 'left',
+    fontWeight: '800',
+    display: 'flex',
+    gap: '14px',
+    alignItems: 'center',
+  },
+
+  printSelected: {
+    width: '100%',
+    padding: '16px',
+    marginTop: '8px',
+    borderRadius: '13px',
+    border: '2px solid #bda7ff',
+    background: '#ffffff',
+    color: '#090b3f',
+    fontSize: '16px',
+    textAlign: 'left',
+    fontWeight: '900',
+    display: 'flex',
+    gap: '14px',
+    alignItems: 'center',
+  },
+
+  copyBox: {
+    width: '210px',
+    height: '58px',
+    margin: '0 auto',
+    borderRadius: '16px',
+    overflow: 'hidden',
+    display: 'grid',
+    gridTemplateColumns: '1fr 1.25fr 1fr',
+    background: '#ffffff',
+    boxShadow: '0 10px 24px rgba(0,0,0,0.16)',
+  },
+
+  copyButton: {
+    border: 'none',
+    background: '#ffffff',
+    color: '#5b21ff',
+    fontSize: '28px',
+    fontWeight: '900',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+  },
+
+  copyInput: {
+    width: '100%',
+    height: '100%',
+    border: 'none',
+    borderLeft: '1px solid #e5e7eb',
+    borderRight: '1px solid #e5e7eb',
+    outline: 'none',
+    background: '#ffffff',
+    color: '#080a3f',
+    fontSize: '22px',
+    fontWeight: '900',
+    textAlign: 'center',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 0,
+    boxSizing: 'border-box',
+  },
+
+  pageButtons: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    gap: '10px',
+  },
+
+  pageButton: {
+    padding: '13px',
+    borderRadius: '14px',
+    border: '1px solid rgba(255,255,255,0.24)',
+    background: 'rgba(255,255,255,0.10)',
+    color: '#ffffff',
+    fontWeight: '800',
+  },
+
+  pageSelected: {
+    padding: '13px',
+    borderRadius: '14px',
+    border: '1px solid #ffffff',
+    background: '#ffffff',
+    color: '#10105f',
+    fontWeight: '900',
+  },
+
+  customInput: {
+    width: '100%',
+    marginTop: '12px',
+    padding: '14px',
+    boxSizing: 'border-box',
+    borderRadius: '14px',
+    border: 'none',
+    outline: 'none',
+    fontSize: '16px',
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+
+  amountCard: {
+    borderRadius: '22px',
+    padding: '20px',
+    marginBottom: '14px',
+    textAlign: 'center',
+    border: '1px solid rgba(255,255,255,0.24)',
+    background: 'linear-gradient(135deg, #7f22ff 0%, #e915c8 100%)',
+    boxShadow: '0 16px 34px rgba(0,0,0,0.22)',
+    color: '#ffffff',
+  },
+
+  amountTitle: {
+    margin: 0,
+    color: '#ffffff',
+    fontSize: '22px',
+    fontWeight: '900',
+  },
+
+  amountValue: {
+    display: 'block',
+    fontSize: '48px',
+    color: '#ffea00',
+    marginTop: '10px',
+    fontWeight: '900',
+  },
+
+  amountBreak: {
+    margin: '8px 0 0',
+    color: '#ffffff',
+    fontSize: '17px',
+    fontWeight: '800',
+  },
+
+  amountSmall: {
+    display: 'block',
+    marginTop: '6px',
+    color: 'rgba(255,255,255,0.9)',
+    fontWeight: '700',
+  },
+
+  onlinePay: {
+    width: '100%',
+    padding: '16px',
+    borderRadius: '16px',
+    border: '1px solid #6dff9c',
+    background: 'linear-gradient(90deg, #13a84a, #049b45)',
+    color: '#ffffff',
+    fontSize: '17px',
+    fontWeight: '900',
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: '12px',
+  },
+
+  cashPay: {
+    width: '100%',
+    padding: '16px',
+    borderRadius: '16px',
+    border: '1px solid #ffe600',
+    background: 'transparent',
+    color: '#ffe600',
+    fontSize: '17px',
+    fontWeight: '900',
+    display: 'flex',
+    justifyContent: 'center',
+    gap: '12px',
+    alignItems: 'center',
+  },
+
+  featureBox: {
+    marginTop: '6px',
+    borderRadius: '22px',
+    padding: '18px 12px',
+    display: 'grid',
+    gridTemplateColumns: 'repeat(3, 1fr)',
+    textAlign: 'center',
+    background: 'rgba(255,255,255,0.10)',
+    border: '1px solid rgba(255,255,255,0.10)',
+    color: '#ffffff',
+  },
+
+  featureBoxCompact: {
+    marginTop: '18px',
+    borderRadius: '22px',
+    padding: '18px 12px',
+    display: 'grid',
+    gridTemplateColumns: 'repeat(3, 1fr)',
+    textAlign: 'center',
+    background: 'rgba(255,255,255,0.10)',
+    border: '1px solid rgba(255,255,255,0.10)',
+    color: '#ffffff',
+  },
+
+  messageBox: {
+    marginBottom: '14px',
+    padding: '12px',
+    borderRadius: '14px',
+    background: 'rgba(255,255,255,0.16)',
+    color: '#ffffff',
+    textAlign: 'center',
+    fontWeight: '800',
+  },
+
+  helpBox: {
+    marginTop: '14px',
+    padding: '13px',
+    borderRadius: '14px',
+    background: '#fff7ed',
+    color: '#7c2d12',
+    fontSize: '14px',
+  },
+
+  successCard: {
+    marginTop: '60px',
+    padding: '30px 20px',
+    borderRadius: '24px',
+    textAlign: 'center',
+    background: 'rgba(255,255,255,0.10)',
+    border: '1px solid rgba(255,255,255,0.18)',
+    color: '#ffffff',
+  },
+
+  successIcon: {
+    fontSize: '64px',
+  },
+
+  successTitle: {
+    color: '#ffffff',
+    margin: 0,
+  },
+
+  tokenBox: {
+    fontSize: '40px',
+    fontWeight: '900',
+    color: '#ffea00',
+    margin: '18px 0',
+    wordBreak: 'break-word',
+  },
+
+  successStatus: {
+    padding: '14px',
+    borderRadius: '16px',
+    background: 'rgba(255,255,255,0.12)',
+    display: 'flex',
+    justifyContent: 'space-between',
+    color: '#ffffff',
+  },
+
+  successNote: {
+    opacity: 0.92,
+    color: '#ffffff',
+  },
+
+  redirectText: {
+    fontSize: '13px',
+    opacity: 0.8,
+    color: '#ffffff',
+  },
+
+  successButton: {
+    width: '100%',
+    padding: '15px',
+    borderRadius: '16px',
+    border: 'none',
+    background: '#22c55e',
+    color: '#ffffff',
+    fontWeight: '900',
+    fontSize: '16px',
+  },
+};
+
+if (!document.getElementById('falguni-upload-style')) {
+  const styleTag = document.createElement('style');
+  styleTag.id = 'falguni-upload-style';
+  styleTag.innerHTML = `
+    input[type="number"]::-webkit-outer-spin-button,
+    input[type="number"]::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+
+    input[type="number"] {
+      -moz-appearance: textfield;
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+  `;
+  document.head.appendChild(styleTag);
 }
