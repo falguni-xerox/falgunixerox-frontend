@@ -16,8 +16,8 @@ export default function UploadPage() {
   const [finalToken, setFinalToken] = useState('');
   const [paymentMode, setPaymentMode] = useState('');
   const [showPaymentHelp, setShowPaymentHelp] = useState(false);
-  const [printRange, setPrintRange] = useState('all');
-  const [customPages, setCustomPages] = useState('');
+  const printRange = 'all';
+  const customPages = '';
   const [redirectCount, setRedirectCount] = useState(10);
 
   const API_BASE_URL =
@@ -32,23 +32,7 @@ export default function UploadPage() {
   const isPdf = file?.name?.toLowerCase().endsWith('.pdf');
 
   const getBillablePages = () => {
-    if (printRange === 'all' || !customPages) return totalPages;
-
-    let pages = [];
-    customPages.split(',').forEach((part) => {
-      const clean = part.trim();
-      if (clean.includes('-')) {
-        const [start, end] = clean.split('-').map(Number);
-        if (start && end && start <= end) {
-          for (let i = start; i <= end; i++) pages.push(i);
-        }
-      } else {
-        const pageNum = Number(clean);
-        if (pageNum) pages.push(pageNum);
-      }
-    });
-
-    return [...new Set(pages)].filter((p) => p >= 1 && p <= totalPages).length;
+    return totalPages;
   };
 
   const billablePages = getBillablePages();
@@ -65,7 +49,7 @@ export default function UploadPage() {
     if (totalPages > 0) {
       setPrice(calculateLocalPrice(billablePages, duplex, safeCopies));
     }
-  }, [copies, duplex, totalPages, printRange, customPages, billablePages, safeCopies]);
+  }, [copies, duplex, totalPages, billablePages, safeCopies]);
 
   useEffect(() => {
     return () => {
@@ -124,8 +108,6 @@ export default function UploadPage() {
     setJobId(null);
     setLoading(false);
     setPayLoading(false);
-    setPrintRange('all');
-    setCustomPages('');
     setShowThankYou(false);
     setFinalToken('');
     setPaymentMode('');
@@ -180,8 +162,6 @@ export default function UploadPage() {
     setShowPaymentHelp(false);
     setTotalPages(0);
     setPrice(0);
-    setPrintRange('all');
-    setCustomPages('');
   };
 
   const handleUpload = async () => {
@@ -509,30 +489,10 @@ export default function UploadPage() {
                   <h2 style={styles.panelTitle}>Pages</h2>
                 </div>
 
-                <div style={styles.pageButtons}>
-                  <button
-                    onClick={() => setPrintRange('all')}
-                    style={printRange === 'all' ? styles.pageSelected : styles.pageButton}
-                  >
-                    All Pages
-                  </button>
-                  <button
-                    onClick={() => setPrintRange('custom')}
-                    style={printRange === 'custom' ? styles.pageSelected : styles.pageButton}
-                  >
-                    Custom
-                  </button>
+                <div style={styles.allPagesOnlyBox}>
+                  <b>All Pages</b>
+                  <span>{totalPages} pages selected automatically</span>
                 </div>
-
-                {printRange === 'custom' && (
-                  <input
-                    type="text"
-                    placeholder="e.g. 2,4,7-10"
-                    value={customPages}
-                    onChange={(e) => setCustomPages(e.target.value)}
-                    style={styles.customInput}
-                  />
-                )}
               </section>
             )}
 
@@ -909,6 +869,21 @@ const styles = {
     fontSize: '16px',
     fontWeight: '700',
     textAlign: 'center',
+  },
+
+  allPagesOnlyBox: {
+    width: '100%',
+    padding: '15px',
+    boxSizing: 'border-box',
+    borderRadius: '14px',
+    border: '1px solid #ffffff',
+    background: '#ffffff',
+    color: '#10105f',
+    fontWeight: '900',
+    display: 'flex',
+    justifyContent: 'space-between',
+    gap: '10px',
+    alignItems: 'center',
   },
 
   amountCard: {
