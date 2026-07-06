@@ -2,11 +2,11 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 
 export default function UploadPage() {
-  const [files, setFiles] = useState([]); // CHANGE 1: Array બનાવ્યું
+  const [files, setFiles] = useState([]);
   const [filePreviewUrls, setFilePreviewUrls] = useState([]);
   const [totalPages, setTotalPages] = useState(0);
   const [totalFiles, setTotalFiles] = useState(0);
-  const [uploadedJobs, setUploadedJobs] = useState([]); // બધા jobId અહીં Save થશે
+  const [uploadedJobs, setUploadedJobs] = useState([]);
   const [copies, setCopies] = useState(1);
   const [duplex, setDuplex] = useState('single');
   const [price, setPrice] = useState(0);
@@ -74,7 +74,7 @@ export default function UploadPage() {
 
   const totalSheets =
     duplex === 'single'
-     ? billablePages * safeCopies
+    ? billablePages * safeCopies
       : Math.ceil(billablePages / 2) * safeCopies;
 
   const getPriceBreakdown = () => {
@@ -83,7 +83,7 @@ export default function UploadPage() {
     const rate = billablePages <= 5? 5 : isDuplexPrint? 3.5 : 3;
     const units = isDuplexPrint? Math.ceil(billablePages / 2) : billablePages;
     const unitName = isDuplexPrint? 'Sheets' : 'Pages';
-    return `${units} ${unitName} × Rs. ${rate} × ${safeCopies} Copy`;
+    return `${units} ${unitName} × Rs. ${rate} × ${safeCopies} Copy × ${totalFiles} Files`;
   };
 
   const loadRazorpayScript = () => {
@@ -129,12 +129,10 @@ export default function UploadPage() {
     setCopies(Math.min(Math.max(num, 1), 99));
   };
 
-  // CHANGE 2: Multiple File Handle કરવાનો
   const handleFileChange = (e) => {
     const selectedFiles = Array.from(e.target.files);
     if (selectedFiles.length === 0) return;
 
-    // Validation બધી File માટે
     for (let f of selectedFiles) {
       const name = f.name.toLowerCase();
       const isValid =
@@ -158,10 +156,8 @@ export default function UploadPage() {
       }
     }
 
-    // જૂની Preview Clear કર
     filePreviewUrls.forEach(url => URL.revokeObjectURL(url));
 
-    // બધી File + Preview Save કર
     setFiles(selectedFiles);
     setFilePreviewUrls(selectedFiles.map(f => URL.createObjectURL(f)));
     setUploadedJobs([]);
@@ -172,7 +168,6 @@ export default function UploadPage() {
     setPrice(0);
   };
 
-  // CHANGE 3: બધી File Upload કરવાનો
   const handleUpload = async () => {
     if (files.length === 0) {
       setMessage('Please select files first');
@@ -181,7 +176,7 @@ export default function UploadPage() {
 
     const formData = new FormData();
     files.forEach((file) => {
-      formData.append('files', file); // 'files' નામ જ રાખવાનું - Backend સાથે Match
+      formData.append('files', file);
     });
 
     setMessage('Uploading your files...');
@@ -192,7 +187,7 @@ export default function UploadPage() {
       const res = await axios.post(`${API_BASE_URL}/api/upload`, formData);
       setTotalPages(res.data.totalPages || 0);
       setTotalFiles(res.data.totalFiles || files.length);
-      setUploadedJobs(res.data.files || []); // બધા jobId અહીં મળશે
+      setUploadedJobs(res.data.files || []);
       setMessage(`${res.data.totalFiles} files uploaded successfully ✅`);
     } catch (error) {
       console.log(error);
@@ -202,6 +197,7 @@ export default function UploadPage() {
     }
   };
 
+  // CHANGE: બધા jobId નો Total Amount કાઢીને 1 જ Payment
   const handlePay = async () => {
     if (uploadedJobs.length === 0) {
       setMessage('Please upload files first');
@@ -224,11 +220,25 @@ export default function UploadPage() {
     setShowPaymentHelp(false);
 
     try {
+      setMessage('Calculating total amount...');
+
+      // STEP 1: બધા jobId પર Loop મારીને Total Amount કાઢ
+      let totalAmount = 0;
+      for (let job of uploadedJobs) {
+        const res = await axios.post(`${API_BASE_URL}/api/jobs/${job.jobId}/cash`, {
+          copies: safeCopies,
+          printType,
+          printRange,
+          customPages,
+        });
+        totalAmount += res.data.amount;
+      }
+
+      setPrice(totalAmount);
       setMessage('Opening secure payment...');
 
-      // પહેલી File નો jobId વાપરીશું Payment માટે
+      // STEP 2: પહેલા jobId પર Razorpay Order બનાવ પણ Amount = Total
       const mainJobId = uploadedJobs[0].jobId;
-
       const orderRes = await axios.post(
         `${API_BASE_URL}/api/jobs/${mainJobId}/pay/checkout-order`,
         {
@@ -243,7 +253,7 @@ export default function UploadPage() {
 
       const options = {
         key: data.keyId,
-        amount: data.amount,
+        amount: totalAmount * 100, // CHANGE: Total Amount મોકલ્યું
         currency: data.currency || 'INR',
         name: data.shopName || 'Falguni Xerox',
         description: `${billablePages} Pages × ${safeCopies} Copy × ${totalFiles} Files`,
@@ -258,14 +268,18 @@ export default function UploadPage() {
         handler: async function (response) {
           try {
             setMessage('Payment verifying...');
-            const verifyRes = await axios.post(`${API_BASE_URL}/api/payment/verify`, {
-              jobId: mainJobId,
-              razorpay_order_id: response.razorpay_order_id,
-              razorpay_payment_id: response.razorpay_payment_id,
-              razorpay_signature: response.razorpay_signature,
-            });
 
-            setFinalToken(verifyRes.data.token || mainJobId);
+            // STEP 3: Payment Success પછી બધા jobId verify કર
+            for (let job of uploadedJobs) {
+              await axios.post(`${API_BASE_URL}/api/payment/verify`, {
+                jobId: job.jobId,
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+              });
+            }
+
+            setFinalToken(response.razorpay_payment_id);
             setPaymentMode('Online Paid');
             setShowPaymentHelp(false);
             setShowThankYou(true);
@@ -307,6 +321,7 @@ export default function UploadPage() {
     }
   };
 
+  // CHANGE: Cash માટે પણ બધા jobId પર Loop
   const handleCashPayment = async () => {
     if (uploadedJobs.length === 0) {
       setMessage('Please upload files first');
@@ -323,15 +338,21 @@ export default function UploadPage() {
 
     try {
       setMessage('Creating cash order...');
-      const mainJobId = uploadedJobs[0].jobId;
-      const res = await axios.post(`${API_BASE_URL}/api/jobs/${mainJobId}/cash`, {
-        copies: safeCopies,
-        printType,
-        printRange,
-        customPages,
-      });
 
-      setFinalToken(res.data.token || mainJobId);
+      let totalAmount = 0;
+      // બધા jobId પર cash order બનાવ
+      for (let job of uploadedJobs) {
+        const res = await axios.post(`${API_BASE_URL}/api/jobs/${job.jobId}/cash`, {
+          copies: safeCopies,
+          printType,
+          printRange,
+          customPages,
+        });
+        totalAmount += res.data.amount;
+      }
+
+      setPrice(totalAmount);
+      setFinalToken(uploadedJobs[0].jobId);
       setPaymentMode('Cash Pending');
       setShowThankYou(true);
       setMessage('');
@@ -358,7 +379,7 @@ export default function UploadPage() {
             </div>
             <p style={styles.successNote}>
               {paymentMode === 'Cash Pending'
-               ? 'Please pay cash at the counter. Your print will start after admin confirmation.'
+              ? 'Please pay cash at the counter. Your print will start after admin confirmation.'
                 : 'Printing started. Please collect your print from the counter.'}
             </p>
             <p style={styles.redirectText}>New order screen will open in {redirectCount} seconds.</p>
@@ -397,7 +418,6 @@ export default function UploadPage() {
               <p style={styles.uploadSub}>Max 100MB per file • Ctrl દબાવીને Multiple Select</p>
 
               <label style={styles.dropBox}>
-                {/* CHANGE 4: multiple attribute Add કર્યું */}
                 <input
                   type="file"
                   name="files"
@@ -412,7 +432,6 @@ export default function UploadPage() {
                 <span>{files.length > 0? 'Files selected successfully' : 'or tap here to browse'}</span>
               </label>
 
-              {/* CHANGE 5: Selected Files ની List બતાવો */}
               {files.length > 0 && (
                 <div style={{ marginTop: '15px', textAlign: 'left', fontSize: '14px' }}>
                   {files.map((f, i) => (
@@ -427,7 +446,7 @@ export default function UploadPage() {
                 onClick={handleUpload}
                 disabled={loading || files.length === 0}
                 style={{
-                 ...styles.uploadPayButton,
+                ...styles.uploadPayButton,
                   opacity: loading || files.length === 0? 0.65 : 1,
                   cursor: loading || files.length === 0? 'not-allowed' : 'pointer',
                 }}
@@ -598,7 +617,6 @@ const styles = {
     fontFamily: '"Inter","Segoe UI",Roboto,Arial,sans-serif',
     color: '#ffffff',
   },
-
   app: {
     width: '100%',
     maxWidth: '430px',
@@ -609,7 +627,6 @@ const styles = {
       'radial-gradient(circle at top right, rgba(236,72,153,0.28), transparent 30%), linear-gradient(160deg, #1238e8 0%, #4c1dff 45%, #1700a8 100%)',
     color: '#ffffff',
   },
-
   header: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -617,7 +634,6 @@ const styles = {
     gap: '12px',
     marginBottom: '18px',
   },
-
   brandTitle: {
     margin: 0,
     fontSize: '34px',
@@ -626,367 +642,228 @@ const styles = {
     color: '#ffffff',
     textShadow: '0 3px 12px rgba(0,0,0,0.25)',
   },
-
   brandSub: {
     margin: '8px 0 0',
     fontSize: '16px',
     color: '#ffffff',
-    opacity: 0.96,
-    fontWeight: '700',
   },
-
-  printerIcon: {
-    width: '54px',
-    height: '54px',
-    borderRadius: '50%',
-    display: 'grid',
-    placeItems: 'center',
-    background: 'rgba(255,255,255,0.18)',
-    fontSize: '26px',
-    flexShrink: 0,
-  },
-
+  printerIcon: { fontSize: '40px' },
   steps: {
     display: 'flex',
-    justifyContent: 'center',
-    gap: '9px',
-    marginBottom: '22px',
-  },
-
-  step: {
-    padding: '12px 17px',
-    borderRadius: '999px',
-    background: 'rgba(255,255,255,0.16)',
-    color: '#ffffff',
-    fontWeight: '800',
+    justifyContent: 'space-between',
+    marginBottom: '20px',
     fontSize: '14px',
   },
-
-  stepActive: {
-    padding: '12px 17px',
-    borderRadius: '999px',
-    background: '#ffffff',
-    color: '#10105f',
-    fontWeight: '900',
-    fontSize: '14px',
-  },
-
-  stepDone: {
-    padding: '12px 17px',
-    borderRadius: '999px',
-    background: 'rgba(255,255,255,0.26)',
-    color: '#ffffff',
-    fontWeight: '900',
-    fontSize: '14px',
-  },
-
+  step: { opacity: 0.5 },
+  stepActive: { fontWeight: 'bold', color: '#fff' },
+  stepDone: { fontWeight: 'bold', color: '#4ade80' },
   uploadMainCard: {
-    borderRadius: '24px',
-    padding: '28px 24px',
-    border: '1px solid rgba(255,255,255,0.18)',
-    background: 'rgba(255,255,255,0.08)',
-    textAlign: 'center',
-    color: '#ffffff',
-  },
-
-  bigFileIcon: {
-    width: '78px',
-    height: '78px',
-    margin: '0 auto 20px',
-    borderRadius: '22px',
-    display: 'grid',
-    placeItems: 'center',
-    background: 'rgba(255,255,255,0.18)',
-    fontSize: '38px',
-  },
-
-  uploadTitle: {
-    margin: 0,
-    fontSize: '30px',
-    fontWeight: '900',
-    color: '#ffffff',
-  },
-
-  uploadSub: {
-    margin: '8px 0 0',
-    fontSize: '18px',
-    color: '#ffffff',
-  },
-
-  dropBox: {
-    marginTop: '20px',
+    background: '#fff',
+    color: '#1e293b',
+    borderRadius: '20px',
     padding: '30px 20px',
-    borderRadius: '18px',
-    border: '2px dashed rgba(255,255,255,0.4)',
-    background: 'rgba(255,255,255,0.1)',
-    cursor: 'pointer',
+    textAlign: 'center',
+    marginBottom: '20px',
+  },
+  bigFileIcon: { fontSize: '60px', marginBottom: '10px' },
+  uploadTitle: { fontSize: '24px', fontWeight: 'bold', margin: '10px 0' },
+  uploadSub: { fontSize: '14px', color: '#64748b', margin: '4px 0' },
+  dropBox: {
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
     gap: '8px',
+    border: '2px dashed #cbd5e1',
+    borderRadius: '16px',
+    padding: '30px 20px',
+    marginTop: '20px',
+    cursor: 'pointer',
+    background: '#f8fafc',
   },
-
-  folderIcon: {
-    fontSize: '40px',
-  },
-
+  folderIcon: { fontSize: '40px' },
   uploadPayButton: {
     marginTop: '20px',
     width: '100%',
-    padding: '16px',
-    borderRadius: '16px',
+    padding: '14px',
+    borderRadius: '12px',
     border: 'none',
-    background: '#ffffff',
-    color: '#10105f',
-    fontSize: '18px',
-    fontWeight: '900',
+    background: '#6366f1',
+    color: '#fff',
+    fontSize: '16px',
+    fontWeight: 'bold',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-
+  messageBox: {
+    background: '#fef3c7',
+    color: '#92400e',
+    padding: '12px',
+    borderRadius: '10px',
+    marginBottom: '15px',
+    fontSize: '14px',
+  },
   panel: {
-    marginTop: '20px',
+    background: '#fff',
+    color: '#1e293b',
     borderRadius: '20px',
     padding: '20px',
-    border: '1px solid rgba(255,255,255,0.18)',
-    background: 'rgba(255,255,255,0.08)',
+    marginBottom: '15px',
   },
-
   sectionTitle: {
     display: 'flex',
     alignItems: 'center',
     gap: '10px',
     marginBottom: '15px',
   },
-
-  sectionIcon: {
-    fontSize: '24px',
-  },
-
-  panelTitle: {
-    margin: 0,
-    fontSize: '20px',
-    fontWeight: '800',
-  },
-
+  sectionIcon: { fontSize: '24px' },
+  panelTitle: { fontSize: '18px', fontWeight: 'bold', margin: 0 },
   printButton: {
     width: '100%',
-    padding: '14px',
-    marginBottom: '10px',
-    borderRadius: '14px',
-    border: '1px solid rgba(255,255,255,0.3)',
-    background: 'rgba(255,255,255,0.1)',
-    color: '#ffffff',
-    fontSize: '16px',
-    fontWeight: '700',
+    padding: '12px',
+    marginBottom: '8px',
+    borderRadius: '10px',
+    border: '2px solid #e2e8f0',
+    background: '#f8fafc',
     textAlign: 'left',
     cursor: 'pointer',
+    fontSize: '15px',
   },
-
   printSelected: {
     width: '100%',
-    padding: '14px',
-    marginBottom: '10px',
-    borderRadius: '14px',
-    border: '2px solid #ffffff',
-    background: 'rgba(255,255,255,0.25)',
-    color: '#ffffff',
-    fontSize: '16px',
-    fontWeight: '900',
+    padding: '12px',
+    marginBottom: '8px',
+    borderRadius: '10px',
+    border: '2px solid #6366f1',
+    background: '#e0e7ff',
     textAlign: 'left',
     cursor: 'pointer',
+    fontSize: '15px',
+    fontWeight: 'bold',
   },
-
   copyBox: {
     display: 'flex',
     alignItems: 'center',
     gap: '10px',
   },
-
   copyButton: {
-    width: '45px',
-    height: '45px',
-    borderRadius: '12px',
-    border: '1px solid rgba(255,255,255,0.3)',
-    background: 'rgba(255,255,255,0.1)',
-    color: '#ffffff',
-    fontSize: '24px',
-    fontWeight: '900',
+    width: '40px',
+    height: '40px',
+    borderRadius: '8px',
+    border: '2px solid #cbd5e1',
+    background: '#fff',
+    fontSize: '20px',
     cursor: 'pointer',
   },
-
   copyInput: {
     flex: 1,
-    padding: '12px',
-    borderRadius: '12px',
-    border: '1px solid rgba(255,255,255,0.3)',
-    background: 'rgba(255,255,255,0.1)',
-    color: '#ffffff',
-    fontSize: '18px',
-    fontWeight: '800',
+    height: '40px',
     textAlign: 'center',
-  },
-
-  amountCard: {
-    marginTop: '20px',
-    borderRadius: '20px',
-    padding: '24px',
-    border: '2px solid rgba(255,255,255,0.3)',
-    background: 'rgba(255,255,255,0.15)',
-    textAlign: 'center',
-  },
-
-  amountTitle: {
-    margin: 0,
-    fontSize: '18px',
-    fontWeight: '700',
-    opacity: 0.9,
-  },
-
-  amountValue: {
-    display: 'block',
-    fontSize: '42px',
-    fontWeight: '900',
-    margin: '10px 0',
-  },
-
-  amountBreak: {
-    margin: '8px 0',
+    borderRadius: '8px',
+    border: '2px solid #cbd5e1',
     fontSize: '16px',
-    opacity: 0.9,
   },
-
-  amountSmall: {
-    fontSize: '14px',
-    opacity: 0.8,
+  amountCard: {
+    background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+    color: '#fff',
+    borderRadius: '20px',
+    padding: '25px',
+    textAlign: 'center',
+    marginBottom: '15px',
   },
-
+  amountTitle: { fontSize: '18px', margin: '0 0 10px' },
+  amountValue: { fontSize: '36px', display: 'block', margin: '10px 0' },
+  amountBreak: { fontSize: '14px', margin: '8px 0' },
+  amountSmall: { fontSize: '12px', opacity: 0.9 },
   onlinePay: {
     width: '100%',
-    padding: '16px',
-    marginBottom: '12px',
-    borderRadius: '16px',
+    padding: '14px',
+    borderRadius: '12px',
     border: 'none',
-    background: '#ffffff',
-    color: '#10105f',
-    fontSize: '18px',
-    fontWeight: '900',
+    background: '#10b981',
+    color: '#fff',
+    fontSize: '16px',
+    fontWeight: 'bold',
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginBottom: '10px',
     cursor: 'pointer',
   },
-
   cashPay: {
     width: '100%',
-    padding: '16px',
-    borderRadius: '16px',
-    border: '2px solid #ffffff',
-    background: 'transparent',
-    color: '#ffffff',
-    fontSize: '18px',
-    fontWeight: '900',
+    padding: '14px',
+    borderRadius: '12px',
+    border: '2px solid #cbd5e1',
+    background: '#fff',
+    color: '#1e293b',
+    fontSize: '16px',
+    fontWeight: 'bold',
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'center',
     gap: '8px',
     cursor: 'pointer',
   },
-
   helpBox: {
-    marginTop: '15px',
+    background: '#fef2f2',
+    color: '#991b1b',
     padding: '12px',
-    borderRadius: '12px',
-    background: 'rgba(255,193,7,0.2)',
-    border: '1px solid rgba(255,193,7,0.5)',
-    fontSize: '14px',
+    borderRadius: '10px',
+    marginTop: '10px',
+    fontSize: '13px',
   },
-
-  messageBox: {
-    marginTop: '15px',
-    padding: '12px',
-    borderRadius: '12px',
-    background: 'rgba(255,255,255,0.15)',
-    textAlign: 'center',
-    fontWeight: '700',
-  },
-
   successCard: {
-    borderRadius: '24px',
-    padding: '40px 24px',
-    border: '1px solid rgba(255,255,255,0.18)',
-    background: 'rgba(255,255,255,0.08)',
+    background: '#fff',
+    color: '#1e293b',
+    borderRadius: '20px',
+    padding: '40px 30px',
     textAlign: 'center',
   },
-
-  successIcon: {
-    fontSize: '60px',
-    marginBottom: '20px',
-  },
-
-  successTitle: {
-    fontSize: '28px',
-    fontWeight: '900',
-    margin: '10px 0',
-  },
-
+  successIcon: { fontSize: '60px', marginBottom: '10px' },
+  successTitle: { fontSize: '24px', fontWeight: 'bold', margin: '10px 0' },
   tokenBox: {
     fontSize: '48px',
-    fontWeight: '900',
-    padding: '20px',
+    fontWeight: 'bold',
+    color: '#6366f1',
     margin: '20px 0',
-    borderRadius: '16px',
-    background: 'rgba(255,255,255,0.2)',
-    border: '3px solid #ffffff',
   },
-
   successStatus: {
     display: 'flex',
     justifyContent: 'space-between',
-    padding: '12px 0',
-    borderTop: '1px solid rgba(255,255,255,0.3)',
-    borderBottom: '1px solid rgba(255,255,255,0.3)',
+    padding: '15px',
+    background: '#f1f5f9',
+    borderRadius: '10px',
     margin: '20px 0',
   },
-
-  successNote: {
-    fontSize: '15px',
-    opacity: 0.9,
-    lineHeight: '1.5',
-  },
-
-  redirectText: {
-    fontSize: '14px',
-    opacity: 0.8,
-    marginTop: '20px',
-  },
-
+  successNote: { fontSize: '14px', color: '#64748b', margin: '15px 0' },
+  redirectText: { fontSize: '13px', color: '#94a3b8', margin: '15px 0' },
   successButton: {
-    marginTop: '20px',
     width: '100%',
-    padding: '16px',
-    borderRadius: '16px',
+    padding: '14px',
+    borderRadius: '12px',
     border: 'none',
-    background: '#ffffff',
-    color: '#10105f',
-    fontSize: '18px',
-    fontWeight: '900',
+    background: '#6366f1',
+    color: '#fff',
+    fontSize: '16px',
+    fontWeight: 'bold',
     cursor: 'pointer',
   },
-
   featureBox: {
+    display: 'flex',
+    justifyContent: 'space-around',
+    background: 'rgba(255,255,255,0.1)',
+    borderRadius: '15px',
+    padding: '20px',
     marginTop: '20px',
-    display: 'flex',
-    justifyContent: 'space-around',
-    textAlign: 'center',
   },
-
   featureBoxCompact: {
-    marginTop: '15px',
     display: 'flex',
     justifyContent: 'space-around',
-    textAlign: 'center',
-    fontSize: '14px',
+    background: 'rgba(255,255,255,0.1)',
+    borderRadius: '15px',
+    padding: '15px',
+    marginTop: '15px',
+    fontSize: '12px',
   },
 };
