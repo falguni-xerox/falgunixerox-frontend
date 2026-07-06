@@ -695,16 +695,16 @@ const styles = {
     color: '#ffffff',
   },
 
-  bigFileIcon: {
-    width: '78px',
-    height: '78px',
-    margin: '0 auto 28px',
-    borderRadius: '22px',
-    display: 'grid',
-    placeItems: 'center',
-    background: 'rgba(255,255,255,0.18)',
-    fontSize: '38px',
-  },
+bigFileIcon: {
+  width: "78px",
+  height: "78px",
+  margin: "0 auto 30px",
+  borderRadius: "22px",
+  display: "grid",
+  placeItems: "center",
+  background: "rgba(255,255,255,0.18)",
+  fontSize: "38px",
+},
 
   uploadTitle: {
     margin: 0,
@@ -757,7 +757,6 @@ const styles = {
     gap: '14px',
   },
 
-  },
 panel: {
   background: "linear-gradient(135deg, rgba(114,115,255,0.85), rgba(123,97,255,0.75))",
   backdropFilter: "blur(18px)",
