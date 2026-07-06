@@ -550,10 +550,6 @@ export default function UploadPage() {
                 <b>›</b>
               </button>
 
-              <button onClick={handleCashPayment} disabled={payLoading} style={styles.cashPay}>
-                <span>💵</span>
-                Pay Cash at Counter
-              </button>
 
               {showPaymentHelp && (
                 <div style={styles.helpBox}>
