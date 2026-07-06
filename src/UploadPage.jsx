@@ -74,7 +74,7 @@ export default function UploadPage() {
 
   const totalSheets =
     duplex === 'single'
-    ? billablePages * safeCopies
+  ? billablePages * safeCopies
       : Math.ceil(billablePages / 2) * safeCopies;
 
   const getPriceBreakdown = () => {
@@ -220,25 +220,12 @@ export default function UploadPage() {
     setShowPaymentHelp(false);
 
     try {
-      setMessage('Calculating total amount...');
-
-      // STEP 1: બધા jobId પર Loop મારીને Total Amount કાઢ
-      let totalAmount = 0;
-      for (let job of uploadedJobs) {
-        const res = await axios.post(`${API_BASE_URL}/api/jobs/${job.jobId}/cash`, {
-          copies: safeCopies,
-          printType,
-          printRange,
-          customPages,
-        });
-        totalAmount += res.data.amount;
-      }
-
-      setPrice(totalAmount);
       setMessage('Opening secure payment...');
 
-      // STEP 2: પહેલા jobId પર Razorpay Order બનાવ પણ Amount = Total
+      // પહેલી File નો jobId વાપરીશું Payment માટે
       const mainJobId = uploadedJobs[0].jobId;
+
+      // CHANGE: totalJobIds Add કર્યું - બધા jobId Backend માં મોકલાશે
       const orderRes = await axios.post(
         `${API_BASE_URL}/api/jobs/${mainJobId}/pay/checkout-order`,
         {
@@ -246,6 +233,7 @@ export default function UploadPage() {
           printType,
           printRange,
           customPages,
+          totalJobIds: JSON.stringify(uploadedJobs.map(j => j.jobId)) // આ Line Add કરી
         }
       );
 
@@ -253,7 +241,7 @@ export default function UploadPage() {
 
       const options = {
         key: data.keyId,
-        amount: totalAmount * 100, // CHANGE: Total Amount મોકલ્યું
+        amount: data.amount, // Backend માંથી Total Amount આવશે
         currency: data.currency || 'INR',
         name: data.shopName || 'Falguni Xerox',
         description: `${billablePages} Pages × ${safeCopies} Copy × ${totalFiles} Files`,
@@ -269,7 +257,7 @@ export default function UploadPage() {
           try {
             setMessage('Payment verifying...');
 
-            // STEP 3: Payment Success પછી બધા jobId verify કર
+            // Payment Success પછી બધા jobId verify કર
             for (let job of uploadedJobs) {
               await axios.post(`${API_BASE_URL}/api/payment/verify`, {
                 jobId: job.jobId,
@@ -321,7 +309,6 @@ export default function UploadPage() {
     }
   };
 
-  // CHANGE: Cash માટે પણ બધા jobId પર Loop
   const handleCashPayment = async () => {
     if (uploadedJobs.length === 0) {
       setMessage('Please upload files first');
@@ -379,7 +366,7 @@ export default function UploadPage() {
             </div>
             <p style={styles.successNote}>
               {paymentMode === 'Cash Pending'
-              ? 'Please pay cash at the counter. Your print will start after admin confirmation.'
+            ? 'Please pay cash at the counter. Your print will start after admin confirmation.'
                 : 'Printing started. Please collect your print from the counter.'}
             </p>
             <p style={styles.redirectText}>New order screen will open in {redirectCount} seconds.</p>
@@ -446,7 +433,7 @@ export default function UploadPage() {
                 onClick={handleUpload}
                 disabled={loading || files.length === 0}
                 style={{
-                ...styles.uploadPayButton,
+              ...styles.uploadPayButton,
                   opacity: loading || files.length === 0? 0.65 : 1,
                   cursor: loading || files.length === 0? 'not-allowed' : 'pointer',
                 }}
