@@ -1,1081 +1,631 @@
-import { useState, useEffect } from 'react';
-import axios from 'axios';
+import express from "express";
+import multer from "multer";
+import cors from "cors";
+import fs from "fs";
+import crypto from "crypto";
+import Razorpay from "razorpay";
+import { PDFDocument } from "pdf-lib";
 
-export default function UploadPage() {
-  const [file, setFile] = useState(null);
-  const [filePreviewUrl, setFilePreviewUrl] = useState('');
-  const [totalPages, setTotalPages] = useState(0);
-  const [copies, setCopies] = useState(1);
-  const [duplex, setDuplex] = useState('single');
-  const [price, setPrice] = useState(0);
-  const [message, setMessage] = useState('');
-  const [jobId, setJobId] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [payLoading, setPayLoading] = useState(false);
-  const [showThankYou, setShowThankYou] = useState(false);
-  const [finalToken, setFinalToken] = useState('');
-  const [paymentMode, setPaymentMode] = useState('');
-  const [showPaymentHelp, setShowPaymentHelp] = useState(false);
-  const printRange = 'all';
-  const customPages = '';
-  const [redirectCount, setRedirectCount] = useState(10);
+const app = express();
 
-  const API_BASE_URL =
-    import.meta.env.VITE_API_URL ||
-    import.meta.env.VITE_API_BASE_URL ||
-    'http://localhost:10000';
+const PORT = process.env.PORT || 10000;
+const FRONTEND_URL = process.env.FRONTEND_URL || "https://falgunixerox.in";
+const BACKEND_URL =
+  process.env.BACKEND_URL || "https://falgunixerox-backend.onrender.com";
 
-  const printType =
-    duplex === 'single' ? 'single' : duplex === 'long' ? 'duplex_long' : 'duplex_short';
+const PRINT_LEASE_MS = 2 * 60 * 1000;
 
-  const safeCopies = Math.min(Math.max(Number(copies || 1), 1), 99);
-  const isPdf = file?.name?.toLowerCase().endsWith('.pdf');
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET,
+});
 
-  const getBillablePages = () => {
-    return totalPages;
-  };
+app.use(
+  cors({
+    origin: [
+      FRONTEND_URL,
+      "https://falgunixerox-frontend.vercel.app",
+      "https://falgunixerox.in",
+      "https://www.falgunixerox.in",
+      "https://falguni-xerox.vercel.app",
+      "http://localhost:5173",
+    ],
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type"],
+  })
+);
 
-  const billablePages = getBillablePages();
+app.use(express.json());
 
-  const calculateLocalPrice = (pages, side, copyCount) => {
-    if (pages <= 0) return 0;
-    const isDuplexPrint = side === 'long' || side === 'short';
-    const rate = pages <= 5 ? 5 : isDuplexPrint ? 3.5 : 3;
-    const units = isDuplexPrint ? Math.ceil(pages / 2) : pages;
-    return Math.round(units * rate * Number(copyCount || 1));
-  };
+const uploadDir = "/tmp/uploads";
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-  useEffect(() => {
-    if (totalPages > 0) {
-      setPrice(calculateLocalPrice(billablePages, duplex, safeCopies));
+const jobs = {};
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadDir),
+  filename: (req, file, cb) => {
+    const safeName = file.originalname
+     .replace(/\s+/g, "_")
+     .replace(/[^a-zA-Z0-9._-]/g, "");
+    cb(null, `${Date.now()}-${safeName}`);
+  },
+});
+
+// CHANGE 1: fileFilter Add કર્યું - ફક્ત PDF + Photo જ Allow
+const upload = multer({
+  storage,
+  limits: { fileSize: 100 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === "application/pdf" || file.mimetype.startsWith("image/")) {
+      cb(null, true);
+    } else {
+      cb(new Error("ફક્ત PDF, JPG, PNG File જ Upload કરો"), false);
     }
-  }, [copies, duplex, totalPages, billablePages, safeCopies]);
+  }
+});
 
-  useEffect(() => {
-    return () => {
-      if (filePreviewUrl) URL.revokeObjectURL(filePreviewUrl);
-    };
-  }, [filePreviewUrl]);
+function nowIso() {
+  return new Date().toISOString();
+}
 
-  useEffect(() => {
-    if (!showThankYou) return;
-    const timer = setInterval(() => {
-      setRedirectCount((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          resetOrder();
-          return 10;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [showThankYou]);
+function makeToken(existingToken) {
+  return existingToken || Math.floor(1000 + Math.random() * 9000);
+}
 
-  const totalSheets =
-    duplex === 'single'
-      ? billablePages * safeCopies
-      : Math.ceil(billablePages / 2) * safeCopies;
+function normalizePrintType(printType) {
+  const value = String(printType || "single").toLowerCase().trim();
 
-  const getPriceBreakdown = () => {
-    if (totalPages <= 0) return '';
-    const isDuplexPrint = duplex === 'long' || duplex === 'short';
-    const rate = billablePages <= 5 ? 5 : isDuplexPrint ? 3.5 : 3;
-    const units = isDuplexPrint ? Math.ceil(billablePages / 2) : billablePages;
-    const unitName = isDuplexPrint ? 'Sheets' : 'Pages';
-    return `${units} ${unitName} × Rs. ${rate} × ${safeCopies} Copy`;
-  };
-
-  const loadRazorpayScript = () => {
-    return new Promise((resolve) => {
-      if (window.Razorpay) return resolve(true);
-      const script = document.createElement('script');
-      script.src = 'https://checkout.razorpay.com/v1/checkout.js';
-      script.onload = () => resolve(true);
-      script.onerror = () => resolve(false);
-      document.body.appendChild(script);
-    });
-  };
-
-  const resetOrder = () => {
-    setFile(null);
-    setFilePreviewUrl('');
-    setTotalPages(0);
-    setCopies(1);
-    setDuplex('single');
-    setPrice(0);
-    setMessage('');
-    setJobId(null);
-    setLoading(false);
-    setPayLoading(false);
-    setShowThankYou(false);
-    setFinalToken('');
-    setPaymentMode('');
-    setShowPaymentHelp(false);
-    setRedirectCount(10);
-  };
-
-  const updateCopies = (value) => {
-    if (value === '') {
-      setCopies('');
-      return;
-    }
-    const num = parseInt(value, 10);
-    if (Number.isNaN(num)) {
-      setCopies(1);
-      return;
-    }
-    setCopies(Math.min(Math.max(num, 1), 99));
-  };
-
-  const handleFileChange = (e) => {
-    const selectedFile = e.target.files[0];
-    if (!selectedFile) return;
-
-    const name = selectedFile.name.toLowerCase();
-    const isValid =
-      selectedFile.type.includes('pdf') ||
-      selectedFile.type.includes('image') ||
-      name.endsWith('.pdf') ||
-      name.endsWith('.jpg') ||
-      name.endsWith('.jpeg') ||
-      name.endsWith('.png');
-
-    if (!isValid) {
-      setMessage('Only PDF, JPG, JPEG, PNG files allowed ❌');
-      e.target.value = '';
-      return;
-    }
-
-    if (selectedFile.size > 50 * 1024 * 1024) {
-      setMessage('Max file size 50MB allowed ❌');
-      e.target.value = '';
-      return;
-    }
-
-    if (filePreviewUrl) URL.revokeObjectURL(filePreviewUrl);
-
-    setFile(selectedFile);
-    setFilePreviewUrl(URL.createObjectURL(selectedFile));
-    setJobId(null);
-    setMessage('');
-    setShowPaymentHelp(false);
-    setTotalPages(0);
-    setPrice(0);
-  };
-
-  const handleUpload = async () => {
-    if (!file) {
-      setMessage('Please select a file first');
-      return;
-    }
-
-    const formData = new FormData();
-    formData.append('file', file);
-
-    setMessage('Uploading your file...');
-    setShowPaymentHelp(false);
-    setLoading(true);
-
-    try {
-      const res = await axios.post(`${API_BASE_URL}/api/upload`, formData);
-      setTotalPages(res.data.pages || 1);
-      setJobId(res.data.jobId);
-      setMessage('File uploaded successfully ✅');
-    } catch (error) {
-      console.log(error);
-      setMessage(error.response?.data?.error || 'Upload failed ❌');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handlePay = async () => {
-    if (!jobId) {
-      setMessage('Please upload a file first');
-      return;
-    }
-
-    if (billablePages <= 0) {
-      setMessage('Please select valid pages ❌');
-      return;
-    }
-
-    const loaded = await loadRazorpayScript();
-    if (!loaded) {
-      setShowPaymentHelp(true);
-      setMessage('Payment system load failed. Please check your internet.');
-      return;
-    }
-
-    setPayLoading(true);
-    setShowPaymentHelp(false);
-
-    try {
-      setMessage('Opening secure payment...');
-
-      const orderRes = await axios.post(
-        `${API_BASE_URL}/api/jobs/${jobId}/pay/checkout-order`,
-        {
-          copies: safeCopies,
-          printType,
-          printRange,
-          customPages,
-        }
-      );
-
-      const data = orderRes.data;
-
-      const options = {
-        key: data.keyId,
-        amount: data.amount,
-        currency: data.currency || 'INR',
-        name: data.shopName || 'Falguni Xerox',
-        description: `${billablePages} Pages × ${safeCopies} Copy`,
-        order_id: data.orderId,
-        method: {
-          upi: true,
-          card: false,
-          netbanking: false,
-          wallet: false,
-          paylater: false,
-        },
-        handler: async function (response) {
-          try {
-            setMessage('Payment verifying...');
-            const verifyRes = await axios.post(`${API_BASE_URL}/api/payment/verify`, {
-              jobId,
-              razorpay_order_id: response.razorpay_order_id,
-              razorpay_payment_id: response.razorpay_payment_id,
-              razorpay_signature: response.razorpay_signature,
-            });
-
-            setFinalToken(verifyRes.data.token || jobId);
-            setPaymentMode('Online Paid');
-            setShowPaymentHelp(false);
-            setShowThankYou(true);
-            setMessage('');
-          } catch (err) {
-            console.log(err);
-            setShowPaymentHelp(true);
-            setMessage('Payment done but verification failed. Please show this at counter.');
-          } finally {
-            setPayLoading(false);
-          }
-        },
-        modal: {
-          ondismiss: function () {
-            setMessage('Payment cancelled. Try again or use Cash option.');
-            setShowPaymentHelp(true);
-            setPayLoading(false);
-          },
-        },
-        theme: {
-          color: '#6d28d9',
-        },
-      };
-
-      const rzp = new window.Razorpay(options);
-
-      rzp.on('payment.failed', function () {
-        setShowPaymentHelp(true);
-        setMessage('Payment failed. Select Show All Options → Apps & UPI ID.');
-        setPayLoading(false);
-      });
-
-      rzp.open();
-    } catch (error) {
-      console.log(error);
-      setShowPaymentHelp(true);
-      setMessage(error.response?.data?.error || 'Payment order create failed ❌');
-      setPayLoading(false);
-    }
-  };
-
-  const handleCashPayment = async () => {
-    if (!jobId) {
-      setMessage('Please upload a file first');
-      return;
-    }
-
-    if (billablePages <= 0) {
-      setMessage('Please select valid pages ❌');
-      return;
-    }
-
-    setPayLoading(true);
-    setShowPaymentHelp(false);
-
-    try {
-      setMessage('Creating cash order...');
-      const res = await axios.post(`${API_BASE_URL}/api/jobs/${jobId}/cash`, {
-        copies: safeCopies,
-        printType,
-        printRange,
-        customPages,
-      });
-
-      setFinalToken(res.data.token || jobId);
-      setPaymentMode('Cash Pending');
-      setShowThankYou(true);
-      setMessage('');
-    } catch (error) {
-      console.log(error);
-      setMessage(error.response?.data?.error || 'Cash order failed ❌');
-    } finally {
-      setPayLoading(false);
-    }
-  };
-
-  if (showThankYou) {
-    return (
-      <div style={styles.page}>
-        <div style={styles.app}>
-          <div style={styles.successCard}>
-            <div style={styles.successIcon}>✅</div>
-            <h2 style={styles.successTitle}>Order Received</h2>
-            <p>Your Token Number</p>
-            <div style={styles.tokenBox}>#{finalToken}</div>
-            <div style={styles.successStatus}>
-              <span>Payment</span>
-              <b>{paymentMode}</b>
-            </div>
-            <p style={styles.successNote}>
-              {paymentMode === 'Cash Pending'
-                ? 'Please pay cash at the counter. Your print will start after admin confirmation.'
-                : 'Printing started. Please collect your print from the counter.'}
-            </p>
-            <p style={styles.redirectText}>New order screen will open in {redirectCount} seconds.</p>
-            <button onClick={resetOrder} style={styles.successButton}>
-              New Order
-            </button>
-          </div>
-        </div>
-      </div>
-    );
+  if (
+    value === "duplex_long" ||
+    value === "duplex-long" ||
+    value === "long_edge" ||
+    value === "long-edge" ||
+    value === "duplexlong" ||
+    value === "duplexlongedge"
+  ) {
+    return "duplex_long";
   }
 
-  return (
-    <div style={styles.page}>
-      <div style={styles.app}>
-        <header style={styles.header}>
-          <div>
-            <h1 style={styles.brandTitle}>Falguni Xerox</h1>
-            <p style={styles.brandSub}>Upload • Select • Pay • Print</p>
-          </div>
-          <div style={styles.printerIcon}>🖨️</div>
-        </header>
+  if (
+    value === "duplex_short" ||
+    value === "duplex-short" ||
+    value === "short_edge" ||
+    value === "short-edge" ||
+    value === "duplexshort" ||
+    value === "duplexshortedge"
+  ) {
+    return "duplex_short";
+  }
 
-        <div style={styles.steps}>
-          <span style={jobId ? styles.stepDone : styles.stepActive}>1 Upload</span>
-          <span style={totalPages > 0 ? styles.stepActive : styles.step}>2 Setting</span>
-          <span style={price > 0 ? styles.stepActive : styles.step}>3 Pay</span>
-        </div>
+  return "single";
+}
 
-        {totalPages <= 0 && (
-          <>
-            <section style={styles.uploadMainCard}>
-              <div style={styles.bigFileIcon}>📄</div>
-              <h2 style={styles.uploadTitle}>Upload File</h2>
-              <p style={styles.uploadSub}>PDF, JPG, JPEG, PNG</p>
-              <p style={styles.uploadSub}>Max 50MB</p>
+function parseCustomPages(customPages, totalPages) {
+  const pages = new Set();
+  const text = String(customPages || "").trim();
+  if (!text) return [];
 
-              <label style={styles.dropBox}>
-                <input
-                  type="file"
-                  onChange={handleFileChange}
-                  accept=".pdf,.jpg,.jpeg,.png"
-                  disabled={loading}
-                  style={{ display: 'none' }}
-                />
-                <div style={styles.folderIcon}>📁</div>
-                <b>{file ? file.name : 'Select File'}</b>
-                <span>{file ? 'File selected successfully' : 'or tap here to browse'}</span>
-              </label>
+  text.split(",").forEach((part) => {
+    const clean = part.trim();
+    if (!clean) return;
 
-              <button
-                onClick={handleUpload}
-                disabled={loading || !file}
-                style={{
-                  ...styles.uploadPayButton,
-                  opacity: loading || !file ? 0.65 : 1,
-                  cursor: loading || !file ? 'not-allowed' : 'pointer',
-                }}
-              >
-                {loading ? 'Uploading...' : 'Upload & Pay કરો'} <span>›</span>
-              </button>
-            </section>
+    if (clean.includes("-")) {
+      const [startRaw, endRaw] = clean.split("-");
+      const startNum = Number(startRaw.trim());
+      const endNum = Number(endRaw.trim());
 
-            {message && <div style={styles.messageBox}>{message}</div>}
-            <FeatureBox compact />
-          </>
-        )}
+      if (Number.isInteger(startNum) && Number.isInteger(endNum)) {
+        const start = Math.max(1, Math.min(startNum, endNum));
+        const end = Math.min(totalPages, Math.max(startNum, endNum));
+        for (let i = start; i <= end; i++) pages.add(i);
+      }
+    } else {
+      const pageNum = Number(clean);
+      if (Number.isInteger(pageNum) && pageNum >= 1 && pageNum <= totalPages) {
+        pages.add(pageNum);
+      }
+    }
+  });
 
-        {totalPages > 0 && (
-          <>
-            <section style={styles.panel}>
-              <div style={styles.sectionTitle}>
-                <span style={styles.sectionIcon}>📄</span>
-                <h2 style={styles.panelTitle}>Print Type</h2>
-              </div>
+  return [...pages].sort((a, b) => a - b);
+}
 
-              <button
-                onClick={() => setDuplex('single')}
-                style={duplex === 'single' ? styles.printSelected : styles.printButton}
-              >
-                <span>{duplex === 'single' ? '◉' : '○'}</span> Single Side
-              </button>
+function calculateAmount(job, copies, printType, printRange, customPages) {
+  const copyCountRaw = Number(copies || 1);
+  const copyCount =
+    Number.isFinite(copyCountRaw) && copyCountRaw > 0
+     ? Math.floor(copyCountRaw)
+      : 1;
 
-              <button
-                onClick={() => setDuplex('long')}
-                style={duplex === 'long' ? styles.printSelected : styles.printButton}
-              >
-                <span>{duplex === 'long' ? '◉' : '○'}</span> Double Side - Long Edge
-              </button>
+  const finalPrintType = normalizePrintType(printType);
+  const finalPrintRange = String(printRange || "all").toLowerCase().trim();
 
-              <button
-                onClick={() => setDuplex('short')}
-                style={duplex === 'short' ? styles.printSelected : styles.printButton}
-              >
-                <span>{duplex === 'short' ? '◉' : '○'}</span> Double Side - Short Edge
-              </button>
-            </section>
+  let selectedPages = job.pages || 1;
 
-            <section style={styles.panel}>
-              <div style={styles.sectionTitle}>
-                <span style={styles.sectionIcon}>🧾</span>
-                <h2 style={styles.panelTitle}>Copies</h2>
-              </div>
+  if (finalPrintRange === "custom") {
+    const parsedPages = parseCustomPages(customPages, job.pages || 1);
+    selectedPages = parsedPages.length;
+  }
 
-              <div style={styles.copyBox}>
-                <button
-                  type="button"
-                  onClick={() => updateCopies(safeCopies - 1)}
-                  disabled={safeCopies <= 1}
-                  style={styles.copyButton}
-                >
-                  −
-                </button>
+  if (!selectedPages || selectedPages <= 0) selectedPages = 1;
 
-                <input
-                  type="number"
-                  value={copies}
-                  min="1"
-                  max="99"
-                  inputMode="numeric"
-                  onChange={(e) => updateCopies(e.target.value)}
-                  onBlur={() => {
-                    if (!copies || Number(copies) < 1) setCopies(1);
-                    if (Number(copies) > 99) setCopies(99);
-                  }}
-                  style={styles.copyInput}
-                />
+  const isDuplex =
+    finalPrintType === "duplex_long" || finalPrintType === "duplex_short";
 
-                <button
-                  type="button"
-                  onClick={() => updateCopies(safeCopies + 1)}
-                  disabled={safeCopies >= 99}
-                  style={styles.copyButton}
-                >
-                  +
-                </button>
-              </div>
-            </section>
+  const billableUnits = isDuplex? Math.ceil(selectedPages / 2) : selectedPages;
+  const rate = selectedPages <= 5? 5 : isDuplex? 3.5 : 3;
+  const amount = Math.round(billableUnits * rate * copyCount);
 
-            {isPdf && (
-              <section style={styles.panel}>
-                <div style={styles.sectionTitle}>
-                  <span style={styles.sectionIcon}>📑</span>
-                  <h2 style={styles.panelTitle}>Pages</h2>
-                </div>
+  return {
+    selectedPages,
+    billableUnits,
+    rate,
+    amount,
+    copyCount,
+    printType: finalPrintType,
+    printRange: finalPrintRange === "custom"? "custom" : "all",
+  };
+}
 
-                <div style={styles.allPagesOnlyBox}>
-                  <b>All Pages</b>
-                  <span>{totalPages} pages selected automatically</span>
-                </div>
-              </section>
-            )}
+app.get("/", (req, res) => {
+  res.send("Falguni Xerox Backend Running - V5.1 Multiple Upload");
+});
 
-            <section style={styles.amountCard}>
-              <h2 style={styles.amountTitle}>Total Amount</h2>
-              <b style={styles.amountValue}>Rs. {price}</b>
-              <p style={styles.amountBreak}>{getPriceBreakdown()}</p>
-              <small style={styles.amountSmall}>
-                {billablePages} pages • {totalSheets} sheets
-              </small>
-            </section>
+app.get("/api/health", (req, res) => {
+  res.json({
+    success: true,
+    message: "Falguni Xerox Backend Running - V5.1 Multiple Upload",
+    time: nowIso(),
+    razorpayConfigured: Boolean(
+      process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET
+    ),
+  });
+});
 
-            <section style={styles.panel}>
-              <div style={styles.sectionTitle}>
-                <span style={styles.sectionIcon}>📱</span>
-                <h2 style={styles.panelTitle}>Payment</h2>
-              </div>
+// CHANGE 2: upload.single -> upload.array + Loop Add કર્યું
+app.post("/api/upload", upload.array("files", 20), async (req, res) => {
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "No files uploaded",
+      });
+    }
 
-              <button onClick={handlePay} disabled={payLoading} style={styles.onlinePay}>
-                <span>🔒</span>
-                {payLoading ? 'Please wait...' : `Pay Online Rs. ${price}`}
-                <b>›</b>
-              </button>
+    const uploadedJobs = [];
+    let totalPages = 0;
 
-              <button onClick={handleCashPayment} disabled={payLoading} style={styles.cashPay}>
-                <span>💵</span>
-                Pay Cash at Counter
-              </button>
+    for (const file of req.files) {
+      let pages = 1;
 
-              {showPaymentHelp && (
-                <div style={styles.helpBox}>
-                  <b>If payment app does not open:</b>
-                  <p>Select Show All Options → Apps &amp; UPI ID → Choose your UPI app.</p>
-                </div>
-              )}
-            </section>
+      if (file.mimetype === "application/pdf") {
+        const pdfBytes = fs.readFileSync(file.path);
+        const pdfDoc = await PDFDocument.load(pdfBytes);
+        pages = pdfDoc.getPageCount();
+      }
 
-            {message && <div style={styles.messageBox}>{message}</div>}
-            <FeatureBox />
-          </>
-        )}
-      </div>
-    </div>
+      const jobId = file.filename;
+      const fileUrl = `${BACKEND_URL}/uploads/${file.filename}`;
+
+      jobs[jobId] = {
+        jobId,
+        token: null,
+        status: "uploaded",
+        fileUrl,
+        localPath: file.path,
+        filename: file.filename,
+        originalName: file.originalname,
+        size: file.size,
+        pages,
+        copies: 1,
+        printType: "single",
+        printRange: "all",
+        customPages: "",
+        selectedPages: pages,
+        amount: 0,
+        price: 0,
+        payment: null,
+        razorpayOrderId: null,
+        razorpayPaymentId: null,
+        createdAt: nowIso(),
+        cashCreatedAt: null,
+        cashPaidAt: null,
+        onlineCreatedAt: null,
+        razorpayPaidAt: null,
+        printingStartedAt: null,
+        printedAt: null,
+        reprintAt: null,
+        printAttempts: 0,
+      };
+
+      uploadedJobs.push({
+        jobId,
+        pages,
+        url: fileUrl,
+        filename: file.filename,
+        name: file.originalname,
+        size: file.size,
+      });
+
+      totalPages += pages;
+    }
+
+    return res.json({
+      success: true,
+      totalFiles: uploadedJobs.length,
+      totalPages: totalPages,
+      files: uploadedJobs,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: "Upload failed",
+      details: error.message,
+    });
+  }
+}); // CHANGE 3: આ } બ્રેસ Missing હતું એ Add કર્યું
+
+app.post("/api/jobs/:jobId/cash", (req, res) => {
+  const { copies, printType, printRange, customPages } = req.body;
+  const jobId = req.params.jobId;
+
+  if (!jobs[jobId]) {
+    return res.status(404).json({ success: false, error: "Job not found" });
+  }
+
+  const result = calculateAmount(
+    jobs[jobId],
+    copies,
+    printType,
+    printRange,
+    customPages
   );
-}
 
-function FeatureBox({ compact = false }) {
-  return (
-    <div style={compact ? styles.featureBoxCompact : styles.featureBox}>
-      <div>
-        <span>⚡</span>
-        <b>Fast</b>
-        <p>Printing</p>
-      </div>
-      <div>
-        <span>🛡️</span>
-        <b>Secure</b>
-        <p>Payment</p>
-      </div>
-      <div>
-        <span>💎</span>
-        <b>Best</b>
-        <p>Quality</p>
-      </div>
-    </div>
-  );
-}
+  const token = makeToken(jobs[jobId].token);
 
-const styles = {
-  page: {
-    minHeight: '100dvh',
-    background: 'linear-gradient(160deg, #1238e8 0%, #4c1dff 45%, #1700a8 100%)',
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'flex-start',
-    fontFamily: '"Inter","Segoe UI",Roboto,Arial,sans-serif',
-    color: '#ffffff',
-  },
+  jobs[jobId] = {
+   ...jobs[jobId],
+    token,
+    status: "pending_print",
+    copies: result.copyCount,
+    printType: result.printType,
+    printRange: result.printRange,
+    customPages: result.printRange === "custom"? String(customPages || "") : "",
+    selectedPages: result.selectedPages,
+    billableUnits: result.billableUnits,
+    rate: result.rate,
+    amount: result.amount,
+    price: result.amount,
+    payment: { method: "cash", status: "paid" },
+    cashCreatedAt: jobs[jobId].cashCreatedAt || nowIso(),
+    cashPaidAt: nowIso(),
+    printingStartedAt: null,
+    printedAt: null,
+  };
 
-  app: {
-    width: '100%',
-    maxWidth: '430px',
-    minHeight: '100dvh',
-    padding: '22px 20px 14px',
-    boxSizing: 'border-box',
-    background:
-      'radial-gradient(circle at top right, rgba(236,72,153,0.28), transparent 30%), linear-gradient(160deg, #1238e8 0%, #4c1dff 45%, #1700a8 100%)',
-    color: '#ffffff',
-  },
+  return res.json({ success: true, token, jobId, amount: result.amount });
+});
 
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: '12px',
-    marginBottom: '18px',
-  },
+app.post("/api/jobs/:jobId/pay/checkout-order", async (req, res) => {
+  try {
+    const { copies, printType, printRange, customPages } = req.body;
+    const jobId = req.params.jobId;
 
-  brandTitle: {
-    margin: 0,
-    fontSize: '34px',
-    lineHeight: '40px',
-    fontWeight: '900',
-    color: '#ffffff',
-    textShadow: '0 3px 12px rgba(0,0,0,0.25)',
-  },
-
-  brandSub: {
-    margin: '8px 0 0',
-    fontSize: '16px',
-    color: '#ffffff',
-    opacity: 0.96,
-    fontWeight: '700',
-  },
-
-  printerIcon: {
-    width: '54px',
-    height: '54px',
-    borderRadius: '50%',
-    display: 'grid',
-    placeItems: 'center',
-    background: 'rgba(255,255,255,0.18)',
-    fontSize: '26px',
-    flexShrink: 0,
-  },
-
-  steps: {
-    display: 'flex',
-    justifyContent: 'center',
-    gap: '9px',
-    marginBottom: '22px',
-  },
-
-  step: {
-    padding: '12px 17px',
-    borderRadius: '999px',
-    background: 'rgba(255,255,255,0.16)',
-    color: '#ffffff',
-    fontWeight: '800',
-    fontSize: '14px',
-  },
-
-  stepActive: {
-    padding: '12px 17px',
-    borderRadius: '999px',
-    background: '#ffffff',
-    color: '#10105f',
-    fontWeight: '900',
-    fontSize: '14px',
-  },
-
-  stepDone: {
-    padding: '12px 17px',
-    borderRadius: '999px',
-    background: 'rgba(255,255,255,0.26)',
-    color: '#ffffff',
-    fontWeight: '900',
-    fontSize: '14px',
-  },
-
-  uploadMainCard: {
-    borderRadius: '24px',
-    padding: '28px 24px',
-    border: '1px solid rgba(255,255,255,0.18)',
-    background: 'rgba(255,255,255,0.08)',
-    textAlign: 'center',
-    color: '#ffffff',
-  },
-
-  bigFileIcon: {
-    width: '78px',
-    height: '78px',
-    margin: '0 auto 20px',
-    borderRadius: '22px',
-    display: 'grid',
-    placeItems: 'center',
-    background: 'rgba(255,255,255,0.18)',
-    fontSize: '38px',
-  },
-
-  uploadTitle: {
-    margin: 0,
-    fontSize: '30px',
-    fontWeight: '900',
-    color: '#ffffff',
-  },
-
-  uploadSub: {
-    margin: '8px 0 0',
-    fontSize: '18px',
-    color: '#ffffff',
-  },
-
-  dropBox: {
-    marginTop: '26px',
-    minHeight: '162px',
-    borderRadius: '22px',
-    border: '2px dashed rgba(255,255,255,0.75)',
-    display: 'flex',
-    flexDirection: 'column',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: '10px',
-    cursor: 'pointer',
-    padding: '18px',
-    boxSizing: 'border-box',
-    wordBreak: 'break-word',
-    color: '#ffffff',
-  },
-
-  folderIcon: {
-    fontSize: '42px',
-  },
-
-  uploadPayButton: {
-    width: '100%',
-    marginTop: '26px',
-    padding: '17px 20px',
-    borderRadius: '18px',
-    border: '1px solid rgba(255,255,255,0.28)',
-    background: 'linear-gradient(90deg, #8b2cff, #ec26c9)',
-    color: '#ffffff',
-    fontSize: '20px',
-    fontWeight: '900',
-    boxShadow: '0 16px 34px rgba(0,0,0,0.22)',
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: '14px',
-  },
-
-  panel: {
-    borderRadius: '22px',
-    padding: '18px',
-    marginBottom: '14px',
-    border: '1px solid rgba(255,255,255,0.18)',
-    background: 'rgba(255,255,255,0.10)',
-    color: '#ffffff',
-  },
-
-  sectionTitle: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '12px',
-    marginBottom: '16px',
-    color: '#ffffff',
-  },
-
-  sectionIcon: {
-    width: '34px',
-    height: '34px',
-    borderRadius: '10px',
-    background: 'rgba(255,255,255,0.16)',
-    display: 'grid',
-    placeItems: 'center',
-    color: '#ffffff',
-  },
-
-  panelTitle: {
-    margin: 0,
-    color: '#ffffff',
-    fontSize: '22px',
-    fontWeight: '900',
-    textShadow: '0 2px 8px rgba(0,0,0,0.22)',
-  },
-
-  printButton: {
-    width: '100%',
-    padding: '16px',
-    marginTop: '8px',
-    borderRadius: '13px',
-    border: 'none',
-    background: '#ffffff',
-    color: '#090b3f',
-    fontSize: '16px',
-    textAlign: 'left',
-    fontWeight: '800',
-    display: 'flex',
-    gap: '14px',
-    alignItems: 'center',
-  },
-
-  printSelected: {
-    width: '100%',
-    padding: '16px',
-    marginTop: '8px',
-    borderRadius: '13px',
-    border: '2px solid #bda7ff',
-    background: '#ffffff',
-    color: '#090b3f',
-    fontSize: '16px',
-    textAlign: 'left',
-    fontWeight: '900',
-    display: 'flex',
-    gap: '14px',
-    alignItems: 'center',
-  },
-
-  copyBox: {
-    width: '210px',
-    height: '58px',
-    margin: '0 auto',
-    borderRadius: '16px',
-    overflow: 'hidden',
-    display: 'grid',
-    gridTemplateColumns: '1fr 1.25fr 1fr',
-    background: '#ffffff',
-    boxShadow: '0 10px 24px rgba(0,0,0,0.16)',
-  },
-
-  copyButton: {
-    border: 'none',
-    background: '#ffffff',
-    color: '#5b21ff',
-    fontSize: '28px',
-    fontWeight: '900',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    cursor: 'pointer',
-  },
-
-  copyInput: {
-    width: '100%',
-    height: '100%',
-    border: 'none',
-    borderLeft: '1px solid #e5e7eb',
-    borderRight: '1px solid #e5e7eb',
-    outline: 'none',
-    background: '#ffffff',
-    color: '#080a3f',
-    fontSize: '22px',
-    fontWeight: '900',
-    textAlign: 'center',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 0,
-    boxSizing: 'border-box',
-  },
-
-  pageButtons: {
-    display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
-    gap: '10px',
-  },
-
-  pageButton: {
-    padding: '13px',
-    borderRadius: '14px',
-    border: '1px solid rgba(255,255,255,0.24)',
-    background: 'rgba(255,255,255,0.10)',
-    color: '#ffffff',
-    fontWeight: '800',
-  },
-
-  pageSelected: {
-    padding: '13px',
-    borderRadius: '14px',
-    border: '1px solid #ffffff',
-    background: '#ffffff',
-    color: '#10105f',
-    fontWeight: '900',
-  },
-
-  customInput: {
-    width: '100%',
-    marginTop: '12px',
-    padding: '14px',
-    boxSizing: 'border-box',
-    borderRadius: '14px',
-    border: 'none',
-    outline: 'none',
-    fontSize: '16px',
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-
-  allPagesOnlyBox: {
-    width: '100%',
-    padding: '15px',
-    boxSizing: 'border-box',
-    borderRadius: '14px',
-    border: '1px solid #ffffff',
-    background: '#ffffff',
-    color: '#10105f',
-    fontWeight: '900',
-    display: 'flex',
-    justifyContent: 'space-between',
-    gap: '10px',
-    alignItems: 'center',
-  },
-
-  amountCard: {
-    borderRadius: '22px',
-    padding: '20px',
-    marginBottom: '14px',
-    textAlign: 'center',
-    border: '1px solid rgba(255,255,255,0.24)',
-    background: 'linear-gradient(135deg, #7f22ff 0%, #e915c8 100%)',
-    boxShadow: '0 16px 34px rgba(0,0,0,0.22)',
-    color: '#ffffff',
-  },
-
-  amountTitle: {
-    margin: 0,
-    color: '#ffffff',
-    fontSize: '22px',
-    fontWeight: '900',
-  },
-
-  amountValue: {
-    display: 'block',
-    fontSize: '48px',
-    color: '#ffea00',
-    marginTop: '10px',
-    fontWeight: '900',
-  },
-
-  amountBreak: {
-    margin: '8px 0 0',
-    color: '#ffffff',
-    fontSize: '17px',
-    fontWeight: '800',
-  },
-
-  amountSmall: {
-    display: 'block',
-    marginTop: '6px',
-    color: 'rgba(255,255,255,0.9)',
-    fontWeight: '700',
-  },
-
-  onlinePay: {
-    width: '100%',
-    padding: '16px',
-    borderRadius: '16px',
-    border: '1px solid #6dff9c',
-    background: 'linear-gradient(90deg, #13a84a, #049b45)',
-    color: '#ffffff',
-    fontSize: '17px',
-    fontWeight: '900',
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: '12px',
-  },
-
-  cashPay: {
-    width: '100%',
-    padding: '16px',
-    borderRadius: '16px',
-    border: '1px solid #ffe600',
-    background: 'transparent',
-    color: '#ffe600',
-    fontSize: '17px',
-    fontWeight: '900',
-    display: 'flex',
-    justifyContent: 'center',
-    gap: '12px',
-    alignItems: 'center',
-  },
-
-  featureBox: {
-    marginTop: '6px',
-    borderRadius: '22px',
-    padding: '18px 12px',
-    display: 'grid',
-    gridTemplateColumns: 'repeat(3, 1fr)',
-    textAlign: 'center',
-    background: 'rgba(255,255,255,0.10)',
-    border: '1px solid rgba(255,255,255,0.10)',
-    color: '#ffffff',
-  },
-
-  featureBoxCompact: {
-    marginTop: '18px',
-    borderRadius: '22px',
-    padding: '18px 12px',
-    display: 'grid',
-    gridTemplateColumns: 'repeat(3, 1fr)',
-    textAlign: 'center',
-    background: 'rgba(255,255,255,0.10)',
-    border: '1px solid rgba(255,255,255,0.10)',
-    color: '#ffffff',
-  },
-
-  messageBox: {
-    marginBottom: '14px',
-    padding: '12px',
-    borderRadius: '14px',
-    background: 'rgba(255,255,255,0.16)',
-    color: '#ffffff',
-    textAlign: 'center',
-    fontWeight: '800',
-  },
-
-  helpBox: {
-    marginTop: '14px',
-    padding: '13px',
-    borderRadius: '14px',
-    background: '#fff7ed',
-    color: '#7c2d12',
-    fontSize: '14px',
-  },
-
-  successCard: {
-    marginTop: '60px',
-    padding: '30px 20px',
-    borderRadius: '24px',
-    textAlign: 'center',
-    background: 'rgba(255,255,255,0.10)',
-    border: '1px solid rgba(255,255,255,0.18)',
-    color: '#ffffff',
-  },
-
-  successIcon: {
-    fontSize: '64px',
-  },
-
-  successTitle: {
-    color: '#ffffff',
-    margin: 0,
-  },
-
-  tokenBox: {
-    fontSize: '40px',
-    fontWeight: '900',
-    color: '#ffea00',
-    margin: '18px 0',
-    wordBreak: 'break-word',
-  },
-
-  successStatus: {
-    padding: '14px',
-    borderRadius: '16px',
-    background: 'rgba(255,255,255,0.12)',
-    display: 'flex',
-    justifyContent: 'space-between',
-    color: '#ffffff',
-  },
-
-  successNote: {
-    opacity: 0.92,
-    color: '#ffffff',
-  },
-
-  redirectText: {
-    fontSize: '13px',
-    opacity: 0.8,
-    color: '#ffffff',
-  },
-
-  successButton: {
-    width: '100%',
-    padding: '15px',
-    borderRadius: '16px',
-    border: 'none',
-    background: '#22c55e',
-    color: '#ffffff',
-    fontWeight: '900',
-    fontSize: '16px',
-  },
-};
-
-if (!document.getElementById('falguni-upload-style')) {
-  const styleTag = document.createElement('style');
-  styleTag.id = 'falguni-upload-style';
-  styleTag.innerHTML = `
-    input[type="number"]::-webkit-outer-spin-button,
-    input[type="number"]::-webkit-inner-spin-button {
-      -webkit-appearance: none;
-      margin: 0;
+    if (!jobs[jobId]) {
+      return res.status(404).json({ success: false, error: "Job not found" });
     }
 
-    input[type="number"] {
-      -moz-appearance: textfield;
+    if (!process.env.RAZORPAY_KEY_ID ||!process.env.RAZORPAY_KEY_SECRET) {
+      return res.status(500).json({
+        success: false,
+        error: "Razorpay keys not configured",
+      });
     }
 
-    button:disabled {
-      opacity: 0.55;
-      cursor: not-allowed;
+    const result = calculateAmount(
+      jobs[jobId],
+      copies,
+      printType,
+      printRange,
+      customPages
+    );
+
+    if (result.amount <= 0) {
+      return res.status(400).json({ success: false, error: "Invalid amount" });
     }
-  `;
-  document.head.appendChild(styleTag);
-}
+
+    const order = await razorpay.orders.create({
+      amount: result.amount * 100,
+      currency: "INR",
+      receipt: jobId.slice(0, 40),
+      notes: { jobId, shop: "Falguni Xerox" },
+    });
+
+    jobs[jobId] = {
+     ...jobs[jobId],
+      status: "razorpay_pending",
+      copies: result.copyCount,
+      printType: result.printType,
+      printRange: result.printRange,
+      customPages: result.printRange === "custom"? String(customPages || "") : "",
+      selectedPages: result.selectedPages,
+      billableUnits: result.billableUnits,
+      rate: result.rate,
+      amount: result.amount,
+      price: result.amount,
+      razorpayOrderId: order.id,
+      payment: {
+        method: "online",
+        status: "created",
+        orderId: order.id,
+      },
+      onlineCreatedAt: nowIso(),
+    };
+
+    return res.json({
+      success: true,
+      keyId: process.env.RAZORPAY_KEY_ID,
+      orderId: order.id,
+      amount: order.amount,
+      currency: order.currency,
+      shopName: "Falguni Xerox",
+      jobId,
+    });
+  } catch (error) {
+    console.error("Razorpay order error:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Payment order create failed",
+      details: error.message,
+    });
+  }
+});
+
+app.post("/api/payment/verify", (req, res) => {
+  try {
+    const {
+      jobId,
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+    } = req.body;
+
+    if (!jobs[jobId]) {
+      return res.status(404).json({ success: false, error: "Job not found" });
+    }
+
+    if (
+      jobs[jobId].status === "pending_print" ||
+      jobs[jobId].status === "printing" ||
+      jobs[jobId].status === "printed"
+    ) {
+      return res.json({
+        success: true,
+        token: jobs[jobId].token,
+        jobId,
+        alreadyPaid: true,
+      });
+    }
+
+    if (jobs[jobId].razorpayOrderId!== razorpay_order_id) {
+      return res.status(400).json({ success: false, error: "Order ID mismatch" });
+    }
+
+    const expectedSignature = crypto
+     .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+     .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+     .digest("hex");
+
+    if (expectedSignature!== razorpay_signature) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid payment signature",
+      });
+    }
+
+    const token = makeToken(jobs[jobId].token);
+
+    jobs[jobId] = {
+     ...jobs[jobId],
+      token,
+      status: "pending_print",
+      payment: {
+        method: "online",
+        status: "paid",
+        orderId: razorpay_order_id,
+        paymentId: razorpay_payment_id,
+      },
+      razorpayPaymentId: razorpay_payment_id,
+      razorpayPaidAt: nowIso(),
+      printingStartedAt: null,
+      printedAt: null,
+    };
+
+    return res.json({
+      success: true,
+      token,
+      jobId,
+      amount: jobs[jobId].amount,
+    });
+  } catch (error) {
+    console.error("Payment verify error:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Payment verification failed",
+      details: error.message,
+    });
+  }
+});
+
+app.get("/api/jobs/pending", (req, res) => {
+  const now = Date.now();
+
+  const pendingJobs = Object.values(jobs).filter((job) => {
+    if (job.status === "pending_print") return true;
+
+    if (job.status === "printing" && job.printingStartedAt) {
+      const started = new Date(job.printingStartedAt).getTime();
+      return now - started > PRINT_LEASE_MS;
+    }
+
+    return false;
+  });
+
+  pendingJobs.forEach((job) => {
+    job.status = "printing";
+    job.printingStartedAt = nowIso();
+    job.printAttempts = Number(job.printAttempts || 0) + 1;
+  });
+
+  return res.json({
+    success: true,
+    jobs: pendingJobs,
+  });
+});
+
+app.post("/api/jobs/:jobId/printed", (req, res) => {
+  const jobId = req.params.jobId;
+
+  if (!jobs[jobId]) {
+    return res.status(404).json({ success: false, error: "Job not found" });
+  }
+
+  jobs[jobId].status = "printed";
+  jobs[jobId].printedAt = nowIso();
+
+  return res.json({ success: true, jobId });
+});
+
+app.get("/api/jobs/recent", (req, res) => {
+  const recentJobs = Object.values(jobs)
+   .filter((job) => job.token)
+   .sort((a, b) => {
+      const ta = new Date(
+        a.razorpayPaidAt ||
+          a.cashPaidAt ||
+          a.cashCreatedAt ||
+          a.reprintAt ||
+          a.printingStartedAt ||
+          a.createdAt
+      ).getTime();
+
+      const tb = new Date(
+        b.razorpayPaidAt ||
+          b.cashPaidAt ||
+          b.cashCreatedAt ||
+          b.reprintAt ||
+          b.printingStartedAt ||
+          b.createdAt
+      ).getTime();
+
+      return tb - ta;
+    })
+   .slice(0, 30);
+
+  return res.json({ success: true, jobs: recentJobs });
+});
+
+app.get("/api/admin/orders", (req, res) => {
+  const orders = Object.values(jobs)
+   .filter((job) => job.token || job.status!== "uploaded")
+   .sort((a, b) => {
+      const ta = new Date(
+        a.razorpayPaidAt ||
+          a.onlineCreatedAt ||
+          a.cashPaidAt ||
+          a.cashCreatedAt ||
+          a.reprintAt ||
+          a.printingStartedAt ||
+          a.createdAt
+      ).getTime();
+
+      const tb = new Date(
+        b.razorpayPaidAt ||
+          b.onlineCreatedAt ||
+          b.cashPaidAt ||
+          b.cashCreatedAt ||
+          b.reprintAt ||
+          b.printingStartedAt ||
+          b.createdAt
+      ).getTime();
+
+      return tb - ta;
+    });
+
+  return res.json(orders);
+});
+
+app.post("/api/admin/orders/:jobId/status", (req, res) => {
+  const jobId = req.params.jobId;
+  const { status } = req.body;
+
+  if (!jobs[jobId]) {
+    return res.status(404).json({ success: false, error: "Job not found" });
+  }
+
+  jobs[jobId].status = status;
+
+  if (status === "printed" || status === "done") {
+    jobs[jobId].printedAt = nowIso();
+  }
+
+  if (status === "pending_print") {
+    jobs[jobId].printingStartedAt = null;
+    jobs[jobId].printedAt = null;
+  }
+
+  return res.json({ success: true, jobId, status });
+});
+
+app.post("/api/admin/jobs/:jobId/cash-paid", (req, res) => {
+  const jobId = req.params.jobId;
+
+  if (!jobs[jobId]) {
+    return res.status(404).json({ success: false, error: "Job not found" });
+  }
+
+  jobs[jobId].token = makeToken(jobs[jobId].token);
+  jobs[jobId].status = "pending_print";
+  jobs[jobId].payment = { method: "cash", status: "paid" };
+  jobs[jobId].cashPaidAt = nowIso();
+  jobs[jobId].printingStartedAt = null;
+  jobs[jobId].printedAt = null;
+
+  return res.json({ success: true, jobId });
+});
+
+app.post("/api/admin/jobs/:jobId/reprint", (req, res) => {
+  const jobId = req.params.jobId;
+
+  if (!jobs[jobId]) {
+    return res.status(404).json({ success: false, error: "Job not found" });
+  }
+
+  jobs[jobId].status = "pending_print";
+  jobs[jobId].reprintAt = nowIso();
+  jobs[jobId].printingStartedAt = null;
+  jobs[jobId].printedAt = null;
+
+  return res.json({ success: true, jobId });
+});
+
+app.use("/uploads", express.static(uploadDir));
+
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+  if (err.message === "ફક્ત PDF, JPG, PNG File જ Upload કરો") {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+
+  return res.status(500).json({
+    success: false,
+    error: err.message || "Server error",
+  });
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT} - V5.1 Multiple Upload`);
+});
