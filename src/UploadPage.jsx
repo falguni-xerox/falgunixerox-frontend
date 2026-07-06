@@ -604,6 +604,7 @@ const styles = {
     fontFamily: '"Inter","Segoe UI",Roboto,Arial,sans-serif',
     color: '#ffffff',
   },
+
   app: {
     width: '100%',
     maxWidth: '430px',
@@ -614,6 +615,7 @@ const styles = {
       'radial-gradient(circle at top right, rgba(236,72,153,0.28), transparent 30%), linear-gradient(160deg, #1238e8 0%, #4c1dff 45%, #1700a8 100%)',
     color: '#ffffff',
   },
+
   header: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -621,6 +623,7 @@ const styles = {
     gap: '12px',
     marginBottom: '18px',
   },
+
   brandTitle: {
     margin: 0,
     fontSize: '34px',
@@ -629,17 +632,24 @@ const styles = {
     color: '#ffffff',
     textShadow: '0 3px 12px rgba(0,0,0,0.25)',
   },
+
   brandSub: {
     margin: '8px 0 0',
     fontSize: '16px',
     color: '#ffffff',
+    opacity: 0.96,
+    fontWeight: '700',
   },
-  printerIcon: { fontSize: '40px' },
-  steps: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    marginBottom: '20px',
-    fontSize: '14px',
+
+  printerIcon: {
+    width: '54px',
+    height: '54px',
+    borderRadius: '50%',
+    display: 'grid',
+    placeItems: 'center',
+    background: 'rgba(255,255,255,0.18)',
+    fontSize: '26px',
+    flexShrink: 0,
   },
   step: { opacity: 0.5 },
   stepActive: { fontWeight: 'bold', color: '#fff' },
