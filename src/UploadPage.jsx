@@ -255,7 +255,7 @@ export default function UploadPage() {
               });
             }
 
-            setFinalToken(response.razorpay_payment_id);
+            setFinalToken(response.razorpay_payment_id.slice(-4).toUppercase());
             setPaymentMode('Online Paid');
             setShowPaymentHelp(false);
             setShowThankYou(true);
@@ -443,6 +443,9 @@ export default function UploadPage() {
                   +
                 </button>
               </div>
+		<div style={{fontsize: '12px' , colour: '#94a3b8' , marginTop: '6px' , textAlign: 'center'}}>
+			Single Side
+		</div>
             </section>
 
             <section style={styles.amountCard}>
@@ -774,14 +777,23 @@ panel: {
     padding: '40px 30px',
     textAlign: 'center',
   },
-  successIcon: { fontSize: '60px', marginBottom: '10px' },
-  successTitle: { fontSize: '24px', fontWeight: 'bold', margin: '10px 0' },
-  tokenBox: {
-    fontSize: '48px',
-    fontWeight: 'bold',
-    color: '#6366f1',
-    margin: '20px 0',
-  },
+  successIcon: { fontSize: '60px', marginBottom: '25px' },
+  successTitle: { fontSize: '24px', fontWeight: 'bold', margin: '15px 0' },
+
+tokenBox: {
+  background: '#1e293b',
+  color: '#fff',
+  padding: '15px',
+  borderRadius: '12px',
+  fontSize: '28px',
+  fontWeight: '900',
+  margin: '15px 0',
+  wordBreak: 'break-all',
+  overflowWrap: 'anywhere',
+  letterSpacing: '1px',
+  textAlign: 'center'
+},
+
   successStatus: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -789,6 +801,7 @@ panel: {
     background: '#f1f5f9',
     borderRadius: '10px',
     margin: '20px 0',
+
   },
   successNote: { fontSize: '14px', color: '#64748b', margin: '15px 0' },
   redirectText: { fontSize: '13px', color: '#94a3b8', margin: '15px 0' },
