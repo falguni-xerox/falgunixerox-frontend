@@ -26,9 +26,8 @@ export default function UploadPage() {
     import.meta.env.VITE_API_BASE_URL ||
     'http://localhost:10000';
 
-  const printType =
-    duplex === 'single'? 'single' : duplex === 'long'? 'duplex_long' : 'duplex_short';
-
+  const printType = 'single';
+    
   const safeCopies = Math.min(Math.max(Number(copies || 1), 1), 99);
 
   const getBillablePages = () => {
@@ -844,21 +843,7 @@ panel: {
     marginBottom: '10px',
     cursor: 'pointer',
   },
-  cashPay: {
-    width: '100%',
-    padding: '14px',
-    borderRadius: '12px',
-    border: '2px solid #cbd5e1',
-    background: '#fff',
-    color: '#1e293b',
-    fontSize: '16px',
-    fontWeight: 'bold',
-    display: 'flex',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: '8px',
-    cursor: 'pointer',
-  },
+
   helpBox: {
     background: '#fef2f2',
     color: '#991b1b',
