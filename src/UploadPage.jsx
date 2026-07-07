@@ -346,7 +346,7 @@ export default function UploadPage() {
               <div style={styles.bigFileIcon}>📄</div>
               <h2 style={styles.uploadTitle}>Upload Files</h2>
               <p style={styles.uploadSub}>PDF, JPG, JPEG, PNG</p>
-              <p style={styles.uploadSub}>Max 100MB per file • Ctrl દબાવીને Multiple Select</p>
+              <p style={styles.uploadSub}>Max 100MB per file</p>
 
               <label style={styles.dropBox}>
                 <input
@@ -382,7 +382,7 @@ export default function UploadPage() {
                   cursor: loading || files.length === 0? 'not-allowed' : 'pointer',
                 }}
               >
-                {loading? 'Uploading...' : `Upload ${files.length} Files & Pay કરો`} <span>›</span>
+                {loading? 'Uploading...' : `Upload ${files.length} Files & Pay`} <span>›</span>
               </button>
             </section>
 
